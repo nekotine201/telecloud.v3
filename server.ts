@@ -1062,6 +1062,28 @@ async function startServer() {
   // ==========================================
   // 9. Download / Stream Media from Telegram MTProto
   // ==========================================
+  class ConcurrencyQueue {
+    private active = 0;
+    private limit = 3; // Limit parallel MTProto downloads to 3 for stability and speed
+    private waiting: (() => void)[] = [];
+
+    async run<T>(task: () => Promise<T>): Promise<T> {
+      if (this.active >= this.limit) {
+        await new Promise<void>((resolve) => this.waiting.push(resolve));
+      }
+      this.active++;
+      try {
+        return await task();
+      } finally {
+        this.active--;
+        const next = this.waiting.shift();
+        if (next) next();
+      }
+    }
+  }
+
+  const downloadQueue = new ConcurrencyQueue();
+
   app.get('/api/telegram/download', async (req, res) => {
     const sessionString = req.query.session as string;
     const chatId = (req.query.chatId as string) || 'me';
@@ -1105,7 +1127,8 @@ async function startServer() {
         if (preview) {
           // If preview, use thumbnail if available to prevent downloading huge files
           if (doc.thumbs && doc.thumbs.length > 0) {
-            downloadOptions.thumb = doc.thumbs.length - 1;
+            // Find the smallest/medium thumbnail (usually the first one in doc.thumbs, e.g. type 's' or 'm') to maximize loading speed
+            downloadOptions.thumb = doc.thumbs[0];
             mimeType = 'image/jpeg';
           } else {
             // For large documents/videos without thumbnails, do not attempt to download full file for a preview
@@ -1115,11 +1138,19 @@ async function startServer() {
             }
           }
         }
-      } else if (msg.media.className === 'MessageMediaPhoto') {
+      } else if (msg.media.className === 'MessageMediaPhoto' && (msg.media as any).photo) {
         mimeType = 'image/jpeg';
         if (preview) {
-          downloadOptions.thumb = 1; // standard medium thumb for photos
+          const photo = (msg.media as any).photo;
+          if (photo.sizes && photo.sizes.length > 0) {
+            const sizes = photo.sizes;
+            // Prefer 's' (small, ~5-10KB) or 'm' (medium, ~15-25KB) for incredibly fast listing/grid loading
+            const thumbObj = sizes.find((s: any) => s.type === 's') || sizes.find((s: any) => s.type === 'm') || sizes[0];
+            downloadOptions.thumb = thumbObj;
+          }
         }
+      } else if (msg.media.className === 'MessageMediaPhoto') {
+        mimeType = 'image/jpeg';
       } else if (msg.media.className === 'MessageMediaWebPage') {
         mimeType = 'image/jpeg';
       }
@@ -1127,16 +1158,29 @@ async function startServer() {
       // Download buffer with timeout guard and single retry
       let buffer: Buffer | undefined;
       try {
-        buffer = await Promise.race([
-          client.downloadMedia(msg, downloadOptions) as Promise<Buffer>,
-          new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error('Download timeout (upload.GetFile)')), preview ? 15000 : 60000)
-          )
-        ]);
+        buffer = await downloadQueue.run(async () => {
+          return await Promise.race([
+            client.downloadMedia(msg, downloadOptions) as Promise<Buffer>,
+            new Promise<never>((_, reject) =>
+              setTimeout(() => reject(new Error('Download timeout (upload.GetFile)')), preview ? 30000 : 60000)
+            )
+          ]);
+        });
       } catch (dlErr: any) {
-        console.warn(`[MTProto] Initial download attempt failed (${dlErr?.message}), retrying once...`);
-        // Retry once
-        buffer = await (client.downloadMedia(msg, downloadOptions) as Promise<Buffer>);
+        console.warn(`[MTProto] Initial download with thumb/options failed (${dlErr?.message || dlErr}), retrying with full media fallback...`);
+        // Retry once WITHOUT downloadOptions (full media fallback)
+        try {
+          buffer = await downloadQueue.run(async () => {
+            return await Promise.race([
+              client.downloadMedia(msg, {}) as Promise<Buffer>,
+              new Promise<never>((_, reject) =>
+                setTimeout(() => reject(new Error('Fallback download timeout')), 30000)
+              )
+            ]);
+          });
+        } catch (retryErr: any) {
+          console.error('[MTProto] Full media download fallback also failed:', retryErr?.message || retryErr);
+        }
       }
 
       if (!buffer || buffer.length === 0) {

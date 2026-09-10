@@ -48,6 +48,10 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
   const [pdfLoading, setPdfLoading] = React.useState(false);
   const [pdfError, setPdfError] = React.useState<string | null>(null);
 
+  const [directBlobUrl, setDirectBlobUrl] = React.useState<string | null>(null);
+  const [directLoading, setDirectLoading] = React.useState(false);
+  const [directError, setDirectError] = React.useState<string | null>(null);
+
   if (!file) return null;
 
   const t = translations[lang];
@@ -62,9 +66,67 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
     setTimeout(() => setCopiedId(false), 2000);
   };
 
-  const previewSrc = file.previewUrl ? resolveApiUrl(file.previewUrl) : undefined;
-  const downloadSrc = file.downloadUrl ? resolveApiUrl(file.downloadUrl) : undefined;
-  const inlineSrc = downloadSrc ? `${downloadSrc}&inline=1` : previewSrc;
+  // Resolve client-direct:// URLs dynamically via local Object URL
+  React.useEffect(() => {
+    const rawUrl = file.previewUrl || file.downloadUrl;
+    if (rawUrl && rawUrl.startsWith('client-direct://')) {
+      let activeBlobUrl: string | null = null;
+      setDirectLoading(true);
+      setDirectError(null);
+
+      const runDirectDownload = async () => {
+        try {
+          const match = rawUrl.match(/^client-direct:\/\/([^/]+)\/([^/]+)\/(.+)$/);
+          if (!match) {
+            throw new Error('Đường dẫn trực tiếp không hợp lệ');
+          }
+          const chatId = match[1];
+          const messageId = parseInt(match[2], 10);
+          const fileName = decodeURIComponent(match[3]);
+
+          const { loadUser } = await import('../services/storage');
+          const userObj = loadUser();
+          if (!userObj?.sessionString) {
+            throw new Error('Bạn cần đăng nhập tài khoản Telegram để tải trực tiếp.');
+          }
+
+          const { downloadFileDirectlyFromTelegram } = await import('../services/clientTelegram');
+          const blob = await downloadFileDirectlyFromTelegram(
+            userObj.sessionString,
+            chatId,
+            messageId,
+            fileName
+          );
+
+          const localUrl = URL.createObjectURL(blob);
+          activeBlobUrl = localUrl;
+          setDirectBlobUrl(localUrl);
+          setDirectLoading(false);
+        } catch (err: any) {
+          console.error('[Preview] Direct download failed:', err);
+          setDirectError(err.message || 'Không thể tải tệp trực tiếp qua WebSocket.');
+          setDirectLoading(false);
+        }
+      };
+
+      runDirectDownload();
+
+      return () => {
+        if (activeBlobUrl) {
+          URL.revokeObjectURL(activeBlobUrl);
+        }
+        setDirectBlobUrl(null);
+      };
+    } else {
+      setDirectBlobUrl(null);
+      setDirectLoading(false);
+      setDirectError(null);
+    }
+  }, [file.id, file.previewUrl, file.downloadUrl]);
+
+  const previewSrc = directBlobUrl || (file.previewUrl && !file.previewUrl.startsWith('client-direct://') ? resolveApiUrl(file.previewUrl) : undefined);
+  const downloadSrc = file.downloadUrl && !file.downloadUrl.startsWith('client-direct://') ? resolveApiUrl(file.downloadUrl) : undefined;
+  const inlineSrc = directBlobUrl || (downloadSrc ? `${downloadSrc}&inline=1` : previewSrc);
 
   React.useEffect(() => {
     const textSrc = inlineSrc || previewSrc;
@@ -126,7 +188,22 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
       <div className="w-full max-w-4xl max-h-[90vh] rounded-3xl overflow-hidden shadow-2xl border flex flex-col md:flex-row bg-white border-slate-200 dark:bg-[#111928] dark:border-slate-800 animate-in zoom-in-95 duration-150">
         {/* Left: Preview Canvas */}
         <div className="flex-1 bg-slate-950 flex flex-col items-center justify-center p-4 min-h-[320px] md:min-h-[480px] relative overflow-hidden">
-          {file.category === 'image' && previewSrc ? (
+          {directLoading ? (
+            <div className="flex flex-col items-center justify-center gap-3 text-slate-300">
+              <div className="w-10 h-10 rounded-full border-4 border-sky-500 border-t-transparent animate-spin" />
+              <span className="text-xs text-slate-400 font-medium">Đang nạp trực tiếp qua WebSocket...</span>
+            </div>
+          ) : directError ? (
+            <div className="flex flex-col items-center justify-center gap-2 text-center p-6 text-rose-400 max-w-sm">
+              <span className="text-xs">{directError}</span>
+              <button
+                onClick={() => window.location.reload()}
+                className="mt-3 px-4 py-1.5 bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/20 text-rose-300 rounded-xl text-xs font-semibold transition-colors"
+              >
+                Tải lại trang
+              </button>
+            </div>
+          ) : file.category === 'image' && previewSrc ? (
             <img
               src={previewSrc}
               alt={file.name}

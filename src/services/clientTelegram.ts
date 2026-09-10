@@ -849,12 +849,40 @@ export async function uploadFileDirectlyToTelegram(options: DirectUploadOptions)
   return result;
 }
 
+function getMimeTypeByFileName(fileName: string): string {
+  const ext = fileName.split('.').pop()?.toLowerCase() || '';
+  const map: Record<string, string> = {
+    'jpg': 'image/jpeg',
+    'jpeg': 'image/jpeg',
+    'png': 'image/png',
+    'gif': 'image/gif',
+    'webp': 'image/webp',
+    'svg': 'image/svg+xml',
+    'mp4': 'video/mp4',
+    'webm': 'video/webm',
+    'ogg': 'video/ogg',
+    'mov': 'video/quicktime',
+    'mp3': 'audio/mpeg',
+    'wav': 'audio/wav',
+    'flac': 'audio/flac',
+    'pdf': 'application/pdf',
+    'txt': 'text/plain',
+    'html': 'text/html',
+    'css': 'text/css',
+    'js': 'application/javascript',
+    'json': 'application/json',
+    'zip': 'application/zip',
+  };
+  return map[ext] || 'application/octet-stream';
+}
+
 export async function downloadFileDirectlyFromTelegram(
   sessionString: string,
   chatId: string,
   messageId: number,
   fileName: string,
-  onProgress?: (progress: number) => void
+  onProgress?: (progress: number) => void,
+  thumbnail?: boolean
 ): Promise<Blob> {
   const client = await getBrowserTelegramClient(sessionString);
 
@@ -873,18 +901,51 @@ export async function downloadFileDirectlyFromTelegram(
   }
   const message = messages[0];
 
-  const buffer = await client.downloadMedia(message, {
+  const downloadOptions: any = {
     progressCallback: (downloaded: any, total: any) => {
       const totalNum = Number(total) || 0;
       const downloadedNum = Number(downloaded) || 0;
       const pct = totalNum > 0 ? Math.min(100, Math.round((downloadedNum / totalNum) * 100)) : 0;
       if (onProgress) onProgress(pct);
     }
-  });
+  };
+
+  if (thumbnail && message.media) {
+    if (message.media.className === 'MessageMediaDocument' && (message.media as any).document) {
+      const doc = (message.media as any).document;
+      if (doc.thumbs && doc.thumbs.length > 0) {
+        // Use the smallest thumbnail for ultra-fast listing previews
+        downloadOptions.thumb = doc.thumbs[0];
+      }
+    } else if (message.media.className === 'MessageMediaPhoto' && (message.media as any).photo) {
+      const photo = (message.media as any).photo;
+      if (photo.sizes && photo.sizes.length > 0) {
+        const sizes = photo.sizes;
+        const thumbObj = sizes.find((s: any) => s.type === 's') || sizes.find((s: any) => s.type === 'm') || sizes[0];
+        downloadOptions.thumb = thumbObj;
+      }
+    }
+  }
+
+  let buffer;
+  try {
+    buffer = await client.downloadMedia(message, downloadOptions);
+  } catch (err) {
+    if (thumbnail) {
+      console.warn('Direct thumbnail download failed, falling back to full media:', err);
+      // Fallback: download full media directly
+      buffer = await client.downloadMedia(message, {
+        progressCallback: downloadOptions.progressCallback
+      });
+    } else {
+      throw err;
+    }
+  }
 
   if (!buffer) {
     throw new Error('Không thể tải tệp từ Telegram (Trống)');
   }
 
-  return new Blob([buffer]);
+  const mimeType = getMimeTypeByFileName(fileName);
+  return new Blob([buffer], { type: mimeType });
 }

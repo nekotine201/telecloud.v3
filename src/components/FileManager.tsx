@@ -54,6 +54,110 @@ import {
 import { formatFileSize, formatDate } from '../services/storage';
 import { resolveApiUrl } from '../services/telegram';
 
+class TaskQueue {
+  private queue: (() => Promise<void>)[] = [];
+  private activeCount = 0;
+  private limit = 2; // Allow at most 2 simultaneous downloads for GramJS stability
+
+  add(task: () => Promise<void>) {
+    this.queue.push(task);
+    this.runNext();
+  }
+
+  private runNext() {
+    if (this.activeCount >= this.limit || this.queue.length === 0) {
+      return;
+    }
+
+    const task = this.queue.shift();
+    if (!task) return;
+
+    this.activeCount++;
+    task().finally(() => {
+      this.activeCount--;
+      this.runNext();
+    });
+  }
+}
+
+const directDownloadQueue = new TaskQueue();
+
+const ClientDirectImage: React.FC<{ src: string; alt: string; className?: string }> = ({ src, alt, className }) => {
+  const [blobUrl, setBlobUrl] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    let localUrl: string | null = null;
+
+    const loadDirectImg = () => {
+      directDownloadQueue.add(async () => {
+        if (!active) return;
+        try {
+          const match = src.match(/^client-direct:\/\/([^/]+)\/([^/]+)\/(.+)$/);
+          if (!match) return;
+          const chatId = match[1];
+          const messageId = parseInt(match[2], 10);
+          const fileName = decodeURIComponent(match[3]);
+
+          const { loadUser } = await import('../services/storage');
+          const userObj = loadUser();
+          if (!userObj?.sessionString) return;
+
+          setLoading(true);
+          const { downloadFileDirectlyFromTelegram } = await import('../services/clientTelegram');
+          const blob = await downloadFileDirectlyFromTelegram(
+            userObj.sessionString,
+            chatId,
+            messageId,
+            fileName,
+            undefined,
+            true
+          );
+
+          if (active) {
+            localUrl = URL.createObjectURL(blob);
+            setBlobUrl(localUrl);
+          }
+        } catch (err) {
+          console.error('Failed to load client direct thumbnail:', err);
+        } finally {
+          if (active) {
+            setLoading(false);
+          }
+        }
+      });
+    };
+
+    loadDirectImg();
+
+    return () => {
+      active = false;
+      if (localUrl) {
+        URL.revokeObjectURL(localUrl);
+      }
+    };
+  }, [src]);
+
+  if (loading) {
+    return (
+      <div className="w-full h-full flex items-center justify-center bg-slate-50 dark:bg-slate-900/40">
+        <div className="w-4 h-4 border-2 border-sky-500 border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  if (!blobUrl) {
+    return (
+      <div className="w-full h-full flex items-center justify-center bg-slate-50 dark:bg-slate-900/40 text-slate-400">
+        <ImageIcon className="w-4 h-4" />
+      </div>
+    );
+  }
+
+  return <img src={blobUrl} alt={alt} className={className} loading="lazy" referrerPolicy="no-referrer" />;
+};
+
 export function getFileExt(fileName: string): string {
   const parts = fileName.split('.');
   return parts.length > 1 ? parts.pop()!.toLowerCase() : '';
@@ -237,9 +341,10 @@ export const FileManager: React.FC<FileManagerProps> = ({
   // Compute files in current scope to determine counts for file type filter chips
   const currentScopeFiles = files.filter(file => {
     if (file.isDeleted) return false;
+    if (!isFileInDestination(file, activeDestination)) return false;
     if (currentFolderId) return file.folderId === currentFolderId;
     if (currentView === 'saved') {
-      return isFileInDestination(file, activeDestination);
+      return true;
     }
     if (currentView === 'starred') return file.isStarred;
     if (currentView === 'recent' || currentView === 'links') return true;
@@ -260,6 +365,9 @@ export const FileManager: React.FC<FileManagerProps> = ({
 
   // Filter files
   const filteredFiles = files.filter(file => {
+    // Always restrict to active destination first
+    if (!isFileInDestination(file, activeDestination)) return false;
+
     // Search
     if (filters.search) {
       const q = filters.search.toLowerCase();
@@ -275,7 +383,7 @@ export const FileManager: React.FC<FileManagerProps> = ({
 
     // View filter
     if (currentView === 'saved') {
-      if (!isFileInDestination(file, activeDestination)) return false;
+      // already filtered by isFileInDestination above
     } else if (currentView === 'recent') {
       if (file.isDeleted) return false;
     } else if (currentView === 'links') {
@@ -412,10 +520,13 @@ export const FileManager: React.FC<FileManagerProps> = ({
     }
     if (file.category === 'image' || ['png', 'jpg', 'jpeg', 'gif', 'webp'].includes(ext)) {
       const rawImgUrl = file.thumbnailUrl || file.previewUrl;
-      const imgUrl = rawImgUrl ? resolveApiUrl(rawImgUrl) : '';
+      const isClientDirect = rawImgUrl?.startsWith('client-direct://');
+      const imgUrl = (rawImgUrl && !isClientDirect) ? resolveApiUrl(rawImgUrl) : '';
       return (
         <div className="w-8 h-8 rounded-lg bg-amber-50 text-amber-500 dark:bg-amber-950/40 dark:text-amber-400 flex items-center justify-center shrink-0 overflow-hidden">
-          {imgUrl ? (
+          {isClientDirect && rawImgUrl ? (
+            <ClientDirectImage src={rawImgUrl} alt="" className="w-full h-full object-cover" />
+          ) : imgUrl ? (
             <img src={imgUrl} alt="" className="w-full h-full object-cover" />
           ) : (
             <ImageIcon className="w-4 h-4" />
@@ -476,21 +587,30 @@ export const FileManager: React.FC<FileManagerProps> = ({
   const renderLargePreview = (file: DriveFile, isLarge: boolean) => {
     const ext = file.name.split('.').pop()?.toLowerCase() || '';
     const rawImgUrl = file.thumbnailUrl || file.previewUrl;
-    const imgUrl = rawImgUrl ? resolveApiUrl(rawImgUrl) : '';
+    const isClientDirect = rawImgUrl?.startsWith('client-direct://');
+    const imgUrl = (rawImgUrl && !isClientDirect) ? resolveApiUrl(rawImgUrl) : '';
     const isImg = file.category === 'image' || ['png', 'jpg', 'jpeg', 'gif', 'webp'].includes(ext);
     const isVid = file.category === 'video' || ['mp4', 'mkv', 'mov', 'webm'].includes(ext);
 
     const heightClass = isLarge ? 'h-48' : 'h-32';
 
-    if ((isImg || isVid) && imgUrl) {
+    if ((isImg || isVid) && (imgUrl || (isClientDirect && rawImgUrl))) {
       return (
         <div className={`w-full ${heightClass} relative overflow-hidden bg-slate-100 dark:bg-slate-900 rounded-t-xl group/thumb`}>
-          <img
-            src={imgUrl}
-            alt={file.name}
-            className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
-            loading="lazy"
-          />
+          {isClientDirect && rawImgUrl ? (
+            <ClientDirectImage
+              src={rawImgUrl}
+              alt={file.name}
+              className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+            />
+          ) : (
+            <img
+              src={imgUrl}
+              alt={file.name}
+              className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+              loading="lazy"
+            />
+          )}
           {isVid && (
             <div className="absolute inset-0 bg-black/25 flex items-center justify-center">
               <div className="w-10 h-10 rounded-full bg-white/90 dark:bg-slate-900/90 text-slate-900 dark:text-white flex items-center justify-center shadow-lg">
