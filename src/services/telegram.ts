@@ -437,10 +437,9 @@ export async function uploadFileToTelegram(
         throw new Error('Quá trình tải tệp đã bị dừng');
       }
       console.warn('[Upload] Direct browser MTProto upload failed, falling back to server-side chunked upload:', directErr);
-    }
-
-    if (!getBackendApiUrl()) {
-      throw new Error('Không thể tải tệp lên qua trực tiếp WebSocket. Vui lòng cấu hình backend.');
+      if (!getBackendApiUrl()) {
+        throw new Error(`Tải tệp trực tiếp qua WebSocket thất bại: ${directErr.message || directErr}`);
+      }
     }
 
     // Server-side chunked upload fallback

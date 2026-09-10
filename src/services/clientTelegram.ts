@@ -804,8 +804,10 @@ export async function uploadFileDirectlyToTelegram(options: DirectUploadOptions)
 
   const client = await getBrowserTelegramClient(sessionString);
 
-  // Wrap the browser HTML5 File inside GramJS CustomFile
-  const customFile = new CustomFile(file.name, file.size, '', file as any);
+  // Convert browser HTML5 File/Blob to a Node-compatible Buffer so GramJS CustomFile can slice it
+  const arrayBuffer = await file.arrayBuffer();
+  const buffer = Buffer.from(arrayBuffer);
+  const customFile = new CustomFile(file.name, file.size, '', buffer);
 
   let target: any = 'me';
   if (chatId !== 'me' && chatId !== 'dest-saved') {
