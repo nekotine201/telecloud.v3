@@ -139,15 +139,20 @@ export async function initRealTelegramQr(apiId?: number, apiHash?: string): Prom
     throw new Error(rawError || 'Khởi tạo MTProto QR thất bại');
   }
 
-  const qrDataUrl = await QRCode.toDataURL(data.qrUrl, {
+  if (!data.qrUrl) {
+    throw new Error('Máy chủ Backend không phản hồi URL mã QR Telegram.');
+  }
+
+  const svgString = await QRCode.toString(data.qrUrl, {
+    type: 'svg',
     width: 280,
     margin: 2,
     color: {
       dark: '#0f172a',
       light: '#ffffff',
     },
-    errorCorrectionLevel: 'M',
   });
+  const qrDataUrl = `data:image/svg+xml;utf8,${encodeURIComponent(svgString)}`;
 
   return {
     sessionId: data.sessionId,
@@ -188,15 +193,16 @@ export async function pollRealTelegramQr(sessionId: string): Promise<{
 
   let qrDataUrl: string | undefined;
   if (data.qrUrl) {
-    qrDataUrl = await QRCode.toDataURL(data.qrUrl, {
+    const svgString = await QRCode.toString(data.qrUrl, {
+      type: 'svg',
       width: 280,
       margin: 2,
       color: {
         dark: '#0f172a',
         light: '#ffffff',
       },
-      errorCorrectionLevel: 'M',
     });
+    qrDataUrl = `data:image/svg+xml;utf8,${encodeURIComponent(svgString)}`;
   }
 
   return {

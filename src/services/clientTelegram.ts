@@ -106,7 +106,11 @@ export async function initClientTelegramQr(apiId?: number, apiHash?: string): Pr
     { apiId: finalApiId, apiHash: finalApiHash },
     {
       qrCode: async ({ token, expires }) => {
-        const qrToken = Buffer.from(token).toString('base64url');
+        // Base64url encoding manual replacement for browser buffer compatibility
+        const qrToken = Buffer.from(token).toString('base64')
+          .replace(/\+/g, '-')
+          .replace(/\//g, '_')
+          .replace(/=+$/, '');
         session.qrToken = qrToken;
         session.qrUrl = `tg://login?token=${qrToken}`;
         session.expires = expires;
@@ -158,15 +162,24 @@ export async function initClientTelegramQr(apiId?: number, apiHash?: string): Pr
     await new Promise(r => setTimeout(r, 100));
   }
 
-  const qrDataUrl = await QRCode.toDataURL(session.qrUrl!, {
+  if (session.status === 'error') {
+    throw new Error(session.error || 'Khởi tạo MTProto QR thất bại');
+  }
+
+  if (!session.qrUrl) {
+    throw new Error('Telegram MTProto không phản hồi URL mã QR.');
+  }
+
+  const svgString = await QRCode.toString(session.qrUrl, {
+    type: 'svg',
     width: 280,
     margin: 2,
     color: {
       dark: '#0f172a',
       light: '#ffffff',
     },
-    errorCorrectionLevel: 'M',
   });
+  const qrDataUrl = `data:image/svg+xml;utf8,${encodeURIComponent(svgString)}`;
 
   return {
     sessionId,
@@ -186,15 +199,16 @@ export async function pollClientTelegramQr(sessionId: string): Promise<any> {
 
   let qrDataUrl: string | undefined;
   if (session.qrUrl) {
-    qrDataUrl = await QRCode.toDataURL(session.qrUrl, {
+    const svgString = await QRCode.toString(session.qrUrl, {
+      type: 'svg',
       width: 280,
       margin: 2,
       color: {
         dark: '#0f172a',
         light: '#ffffff',
       },
-      errorCorrectionLevel: 'M',
     });
+    qrDataUrl = `data:image/svg+xml;utf8,${encodeURIComponent(svgString)}`;
   }
 
   return {
