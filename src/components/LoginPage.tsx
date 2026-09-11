@@ -329,14 +329,14 @@ export const LoginPage: React.FC<LoginPageProps> = ({
       {/* Top Navigation Bar */}
       <header className="w-full px-6 py-4 flex items-center justify-between border-b border-slate-200/80 dark:border-slate-800/80 backdrop-blur-md bg-white/70 dark:bg-[#0f172a]/70 sticky top-0 z-30">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-sky-500 to-blue-600 flex items-center justify-center shadow-lg shadow-sky-500/25">
-            <HardDrive className="w-5 h-5 text-white" />
+          <div className="w-15 h-10 overflow-hidden shrink-0">
+            <img src="https://i.ibb.co/Q3XgxBmK/logo-telecloud.webp" alt="TeleCloud Logo" className="w-full h-full object-cover" />
           </div>
           <div>
-            <div className="flex items-center gap-2">
-              <span className="font-black text-lg tracking-tight text-slate-900 dark:text-white">TeleCloud</span>
-              <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-full bg-sky-100 text-sky-700 dark:bg-sky-950/70 dark:text-sky-300 border border-sky-200 dark:border-sky-800">
-                Cloud v2.0
+            <div className="flex items-center gap-1.5">
+              <span className="font-black text-base sm:text-lg tracking-tight text-slate-900 dark:text-white">TeleCloud</span>
+              <span className="text-[7px] sm:text-[10px] uppercase font-bold tracking-wider px-1 sm:px-2 py-0 sm:py-0.5 rounded-full bg-sky-100 text-sky-700 dark:bg-sky-950/70 dark:text-sky-300 border border-sky-200 dark:border-sky-800">
+                unlimited
               </span>
             </div>
             <p className="text-xs text-slate-500 dark:text-slate-400">
@@ -393,37 +393,10 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                   : 'Scan the QR code with your Telegram mobile app to access your unlimited storage'}
               </p>
 
-              {/* Login Method Tabs */}
-              <div className="mt-5 grid grid-cols-2 p-1 bg-slate-100 dark:bg-slate-800/70 rounded-2xl">
-                <button
-                  id="tab-login-qr"
-                  onClick={() => setAuthTab('qr')}
-                  className={`py-2 px-3 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 ${
-                    authTab === 'qr'
-                      ? 'bg-white dark:bg-sky-600 text-slate-900 dark:text-white shadow-sm'
-                      : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-                  }`}
-                >
-                  <QrCode className="w-4 h-4" />
-                  <span>{lang === 'vi' ? 'Quét mã QR' : 'QR Code'}</span>
-                </button>
-                <button
-                  id="tab-login-phone"
-                  onClick={() => setAuthTab('phone')}
-                  className={`py-2 px-3 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 ${
-                    authTab === 'phone'
-                      ? 'bg-white dark:bg-sky-600 text-slate-900 dark:text-white shadow-sm'
-                      : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-                  }`}
-                >
-                  <Smartphone className="w-4 h-4" />
-                  <span>{lang === 'vi' ? 'Số điện thoại' : 'Phone Number'}</span>
-                </button>
-              </div>
+
             </div>
 
-            {/* Tab 1: QR Code Flow */}
-            {authTab === 'qr' && (
+
               <div className="p-6 sm:p-7">
                 {/* Error Banner */}
                 {errorMessage && (
@@ -628,138 +601,6 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                   </div>
                 )}
               </div>
-            )}
-
-            {/* Tab 2: Phone Number Login Flow */}
-            {authTab === 'phone' && (
-              <div className="p-6 sm:p-7">
-                {errorMessage && (
-                  <div className="mb-4 p-3.5 rounded-2xl bg-rose-50 text-rose-800 dark:bg-rose-950/50 dark:text-rose-300 border border-rose-200 dark:border-rose-900/60 text-xs flex items-start gap-2.5">
-                    <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5 text-rose-500" />
-                    <p className="font-semibold flex-1">{errorMessage}</p>
-                  </div>
-                )}
-
-                {phoneStep === 'enter_phone' ? (
-                  <form onSubmit={handleSendPhoneCode} className="space-y-4">
-                    <div>
-                      <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5">
-                        {lang === 'vi' ? 'Số điện thoại Telegram' : 'Telegram Phone Number'}
-                      </label>
-                      <input
-                        id="phone-input"
-                        type="tel"
-                        value={phoneNumber}
-                        onChange={e => setPhoneNumber(e.target.value)}
-                        placeholder="+84 912 345 678"
-                        className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-sky-500 focus:outline-none"
-                        required
-                        autoFocus
-                      />
-                      <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">
-                        {lang === 'vi'
-                          ? 'Bao gồm mã quốc gia (ví dụ: +84 cho Việt Nam)'
-                          : 'Include international country code (e.g. +1, +84)'}
-                      </p>
-                    </div>
-
-                    <button
-                      id="btn-send-phone-code"
-                      type="submit"
-                      disabled={isSendingCode || !phoneNumber.trim()}
-                      className="w-full py-3 rounded-2xl font-bold text-sm text-white bg-sky-600 hover:bg-sky-500 disabled:opacity-50 transition-all flex items-center justify-center gap-2 shadow-lg shadow-sky-600/25"
-                    >
-                      {isSendingCode ? (
-                        <>
-                          <RefreshCw className="w-4 h-4 animate-spin" />
-                          <span>{lang === 'vi' ? 'Đang gửi mã...' : 'Sending code...'}</span>
-                        </>
-                      ) : (
-                        <>
-                          <span>{lang === 'vi' ? 'Tiếp tục' : 'Continue'}</span>
-                          <ArrowRight className="w-4 h-4" />
-                        </>
-                      )}
-                    </button>
-                  </form>
-                ) : (
-                  <form onSubmit={handleVerifyPhoneCode} className="space-y-4">
-                    <div className="p-3 rounded-2xl bg-sky-50 dark:bg-sky-950/40 border border-sky-200 dark:border-sky-800 text-xs text-sky-800 dark:text-sky-300 flex items-center justify-between">
-                      <div>
-                        <span>{lang === 'vi' ? 'Mã đã gửi đến:' : 'Code sent to:'} </span>
-                        <strong>{phoneNumber}</strong>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setPhoneStep('enter_phone');
-                          setVerificationCode('');
-                          setPhone2faNeeded(false);
-                        }}
-                        className="font-bold underline hover:opacity-80"
-                      >
-                        {lang === 'vi' ? 'Đổi số' : 'Change'}
-                      </button>
-                    </div>
-
-                    <div>
-                      <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5">
-                        {lang === 'vi'
-                          ? `Mã xác thực 5 số (${isCodeViaApp ? 'qua ứng dụng Telegram' : 'qua SMS'})`
-                          : `5-digit confirmation code (${isCodeViaApp ? 'via Telegram app' : 'via SMS'})`}
-                      </label>
-                      <input
-                        id="phone-code-input"
-                        type="text"
-                        value={verificationCode}
-                        onChange={e => setVerificationCode(e.target.value)}
-                        placeholder="12345"
-                        maxLength={8}
-                        className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white text-base tracking-widest text-center font-bold focus:ring-2 focus:ring-sky-500 focus:outline-none"
-                        required
-                        autoFocus
-                      />
-                    </div>
-
-                    {phone2faNeeded && (
-                      <div>
-                        <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5">
-                          {lang === 'vi' ? 'Mật khẩu 2FA Cloud Password' : '2FA Cloud Password'}
-                        </label>
-                        <input
-                          id="phone-2fa-input"
-                          type="password"
-                          value={phone2faPassword}
-                          onChange={e => setPhone2faPassword(e.target.value)}
-                          placeholder={lang === 'vi' ? 'Nhập mật khẩu 2FA...' : 'Enter 2FA password...'}
-                          className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-sky-500 focus:outline-none"
-                          required
-                        />
-                      </div>
-                    )}
-
-                    <button
-                      id="btn-verify-phone-code"
-                      type="submit"
-                      disabled={isVerifyingCode || !verificationCode.trim()}
-                      className="w-full py-3 rounded-2xl font-bold text-sm text-white bg-sky-600 hover:bg-sky-500 disabled:opacity-50 transition-all flex items-center justify-center gap-2 shadow-lg shadow-sky-600/25"
-                    >
-                      {isVerifyingCode ? (
-                        <>
-                          <RefreshCw className="w-4 h-4 animate-spin" />
-                          <span>{lang === 'vi' ? 'Đang kiểm tra...' : 'Checking...'}</span>
-                        </>
-                      ) : (
-                        <>
-                          <CheckCircle2 className="w-4 h-4" />
-                          <span>{lang === 'vi' ? 'Xác nhận & Đăng nhập' : 'Verify & Log In'}</span>
-                        </>
-                      )}
-                    </button>
-                  </form>
-                )}
-              </div>
-            )}
 
             {/* Advanced API ID / Hash (Collapsible) */}
             <div className="px-6 py-3 border-t border-slate-100 dark:border-slate-800/80 bg-slate-50/50 dark:bg-slate-900/30">

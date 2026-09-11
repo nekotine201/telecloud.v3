@@ -14,7 +14,7 @@ import {
 } from 'lucide-react';
 import { TelegramUser, Language, FilterState } from '../types';
 
-export const TELEGRAM_LOGO_URL = 'https://thumb.wikimedia.org/wikipedia/commons/thumb/8/82/Telegram_logo.svg/3840px-Telegram_logo.svg.png?utm_source=commons.wikimedia.org&utm_campaign=index&utm_content=thumbnail';
+export const TELEGRAM_LOGO_URL = 'https://i.ibb.co/Q3XgxBmK/logo-telecloud.webp';
 
 interface HeaderProps {
   user: TelegramUser | null;
@@ -72,7 +72,7 @@ export const Header: React.FC<HeaderProps> = ({
         >
           <div className="w-8 h-8 relative flex items-center justify-center shrink-0">
             <img
-              src="/telegram_logo.png"
+              src="https://i.ibb.co/Q3XgxBmK/logo-telecloud.webp"
               onError={e => {
                 (e.target as HTMLImageElement).src = TELEGRAM_LOGO_URL;
               }}
