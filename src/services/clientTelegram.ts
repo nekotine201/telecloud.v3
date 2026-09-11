@@ -307,16 +307,34 @@ export async function sendClientPhoneCode(phoneNumber: string, apiId?: number, a
       session.status = 'error';
       session.error = err?.message || String(err);
     }
-  }).then((user: any) => {
-    if (user) {
+  }).then(async (possibleUser: any) => {
+    try {
+      // In GramJS, client.start() may resolve to void/undefined. 
+      // We asynchronously fetch the logged-in user profile with client.getMe() to be 100% correct.
+      let finalUser = possibleUser;
+      if (!finalUser || !finalUser.id) {
+        finalUser = await client.getMe();
+      }
+      
       const sessionString = (client.session as any).save() as string;
       session.status = 'success';
       session.user = {
-        id: user.id.toString(),
-        firstName: user.firstName || 'Telegram User',
-        lastName: user.lastName || '',
-        username: user.username || undefined,
-        phone: user.phone || undefined,
+        id: finalUser?.id ? finalUser.id.toString() : 'me',
+        firstName: finalUser?.firstName || 'Telegram User',
+        lastName: finalUser?.lastName || '',
+        username: finalUser?.username || undefined,
+        phone: finalUser?.phone || phoneNumber,
+      };
+      session.sessionString = sessionString;
+    } catch (getMeErr: any) {
+      // Fallback if getMe() fails but the client.start() resolved successfully (authenticated)
+      const sessionString = (client.session as any).save() as string;
+      session.status = 'success';
+      session.user = {
+        id: 'me',
+        firstName: 'Telegram User',
+        lastName: '',
+        phone: phoneNumber,
       };
       session.sessionString = sessionString;
     }
