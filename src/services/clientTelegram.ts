@@ -1,4 +1,4 @@
-import { TelegramClient } from 'telegram';
+import { Api, TelegramClient } from 'telegram';
 import { StringSession } from 'telegram/sessions';
 import { CustomFile } from 'telegram/client/uploads.js';
 import QRCode from 'qrcode/lib/browser';
@@ -156,7 +156,7 @@ export async function initClientTelegramQr(apiId?: number, apiHash?: string): Pr
   // Wait for the QR code URL to be initially populated
   const startWait = Date.now();
   while (!session.qrUrl && session.status === 'pending') {
-    if (Date.now() - startWait > 12000) {
+    if (Date.now() - startWait > 45000) {
       throw new Error('Không thể khởi tạo mã QR từ Telegram (WebSocket Timeout).');
     }
     await new Promise(r => setTimeout(r, 100));
@@ -328,7 +328,7 @@ export async function sendClientPhoneCode(phoneNumber: string, apiId?: number, a
   // Wait for the flow to reach awaiting_code state
   const startWait = Date.now();
   while ((session.status as any) === 'pending' && !session.resolveCode) {
-    if (Date.now() - startWait > 12000) {
+    if (Date.now() - startWait > 45000) {
       throw new Error('Telegram MTProto: Gửi mã xác nhận quá giờ (WSS timeout).');
     }
     await new Promise(r => setTimeout(r, 100));
@@ -791,23 +791,96 @@ export async function verifyTelegramMessagesDirect(
 }
 
 export interface DirectUploadOptions {
-  file: File;
+  file: File | Blob;
   sessionString: string;
   chatId: string;
   caption?: string;
+  filePath?: string;
+  buffer?: Buffer;
   onProgress?: (progress: number, speedMB: string, eta: string) => void;
   signal?: AbortSignal;
 }
 
 export async function uploadFileDirectlyToTelegram(options: DirectUploadOptions): Promise<any> {
-  const { file, sessionString, chatId, caption, onProgress, signal } = options;
+  const { file, sessionString, chatId, caption, onProgress, signal, filePath, buffer: inputBuffer } = options;
+
+  const fileName = (file as any)?.name || 'unnamed_file';
+  const fileExt = fileName.split('.').pop()?.toLowerCase() || '';
+  const isSvg = fileExt === 'svg' || (file as any)?.type === 'image/svg+xml';
+
+  // 1. Resolve local filePath if provided or available (prioritize for local files from folders)
+  let resolvedFilePath: string | undefined = undefined;
+  if (typeof filePath === 'string' && filePath.trim().length > 0) {
+    resolvedFilePath = filePath.trim();
+  } else if (file && typeof (file as any).path === 'string' && (file as any).path.trim().length > 0) {
+    resolvedFilePath = (file as any).path.trim();
+  } else if (file && typeof (file as any).filePath === 'string' && (file as any).filePath.trim().length > 0) {
+    resolvedFilePath = (file as any).filePath.trim();
+  }
+
+  // 2. Resolve buffer: convert Blob/File/ArrayBuffer from browser to a valid Buffer
+  let resolvedBuffer: Buffer | undefined = undefined;
+  if (inputBuffer && Buffer.isBuffer(inputBuffer)) {
+    resolvedBuffer = inputBuffer;
+  } else if (file) {
+    try {
+      if (Buffer.isBuffer(file)) {
+        resolvedBuffer = file;
+      } else if (typeof (file as any).arrayBuffer === 'function') {
+        const arrayBuffer = await (file as any).arrayBuffer();
+        resolvedBuffer = Buffer.from(arrayBuffer);
+      } else if (file instanceof ArrayBuffer) {
+        resolvedBuffer = Buffer.from(file);
+      } else if (ArrayBuffer.isView(file)) {
+        resolvedBuffer = Buffer.from(file.buffer, file.byteOffset, file.byteLength);
+      }
+    } catch (readErr: any) {
+      console.warn(`[DirectUpload] Lỗi đọc buffer của file "${fileName}":`, readErr);
+    }
+
+    // Special handling for SVG: ensure text content is converted if arrayBuffer is empty
+    if (isSvg && (!resolvedBuffer || resolvedBuffer.length === 0)) {
+      if (typeof (file as any).text === 'function') {
+        try {
+          const textContent = await (file as any).text();
+          if (textContent && textContent.trim().length > 0) {
+            resolvedBuffer = Buffer.from(textContent, 'utf-8');
+          }
+        } catch (svgErr: any) {
+          console.warn(`[DirectUpload] Lỗi đọc nội dung văn bản SVG cho "${fileName}":`, svgErr);
+        }
+      }
+    }
+  }
+
+  // 3. Validation: NEVER call upload if both buffer and filePath are undefined/null
+  if (!resolvedBuffer && !resolvedFilePath) {
+    const errorMsg = `File "${fileName}" (.${fileExt || 'unknown'}) không có dữ liệu hợp lệ: cả buffer và filePath đều undefined/null`;
+    console.error(`[Upload Error] Tên file: "${fileName}" | Đuôi: ".${fileExt}" | Nguyên nhân: Cả buffer và filePath đều undefined/null`);
+    throw new Error(errorMsg);
+  }
+
+  // Determine actual file size
+  let actualSize = resolvedBuffer 
+    ? resolvedBuffer.length 
+    : (file ? (file.size || 0) : 0);
+
+  // If buffer is 0 bytes and no filePath, Telegram MTProto rejects parts: 0
+  // Provide minimal valid byte for empty file upload so GramJS / MTProto succeeds
+  if (resolvedBuffer && resolvedBuffer.length === 0 && !resolvedFilePath) {
+    resolvedBuffer = Buffer.from(' ');
+    actualSize = resolvedBuffer.length;
+  }
 
   const client = await getBrowserTelegramClient(sessionString);
 
-  // Convert browser HTML5 File/Blob to a Node-compatible Buffer so GramJS CustomFile can slice it
-  const arrayBuffer = await file.arrayBuffer();
-  const buffer = Buffer.from(arrayBuffer);
-  const customFile = new CustomFile(file.name, file.size, '', buffer);
+  // Construct CustomFile with both resolvedFilePath and resolvedBuffer
+  const customFile = new CustomFile(
+    fileName,
+    actualSize,
+    resolvedFilePath || '',
+    resolvedBuffer || undefined
+  );
 
   let target: any = 'me';
   if (chatId !== 'me' && chatId !== 'dest-saved') {
@@ -825,11 +898,11 @@ export async function uploadFileDirectlyToTelegram(options: DirectUploadOptions)
       throw new Error('USER_CANCELED');
     }
     const pct = Math.min(100, Math.max(0, Math.round(fraction * 100)));
-    const currentBytes = fraction * file.size;
+    const currentBytes = fraction * actualSize;
     const elapsedSec = Math.max(0.2, (Date.now() - startTime) / 1000);
     const speedBytes = currentBytes / elapsedSec;
     const speedMB = (speedBytes / (1024 * 1024)).toFixed(1);
-    const remainingBytes = Math.max(0, file.size - currentBytes);
+    const remainingBytes = Math.max(0, actualSize - currentBytes);
     const remainingSec = Math.max(1, Math.round(remainingBytes / Math.max(1, speedBytes)));
     const eta = remainingSec > 60 ? `${Math.ceil(remainingSec / 60)}m` : `${remainingSec}s`;
 
@@ -838,12 +911,27 @@ export async function uploadFileDirectlyToTelegram(options: DirectUploadOptions)
     }
   };
 
-  const result = await client.sendFile(target, {
+  // Upload file parts directly via client.uploadFile
+  // When resolvedBuffer is provided, set maxBufferSize to 2GB so getFileBuffer
+  // never defaults to options.filePath = file.path when file.path is empty!
+  const fileHandle = await client.uploadFile({
     file: customFile,
-    caption: caption || `TeleDrive Cloud: ${file.name}`,
-    forceDocument: true,
     workers: 4,
-    progressCallback,
+    onProgress: progressCallback,
+    maxBufferSize: resolvedBuffer ? (2 * 1024 * 1024 * 1024) : undefined,
+  });
+
+  const mimeType = isSvg ? 'image/svg+xml' : getMimeTypeByFileName(fileName);
+  const attributes = [
+    new Api.DocumentAttributeFilename({ fileName }),
+  ];
+
+  const result = await client.sendFile(target, {
+    file: fileHandle,
+    caption: caption || `TeleDrive Cloud: ${fileName}`,
+    forceDocument: true,
+    fileSize: actualSize,
+    attributes,
   });
 
   return result;

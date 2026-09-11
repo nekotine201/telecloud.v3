@@ -40,6 +40,26 @@ interface LoginPageProps {
   onToggleLang: (newLang: Language) => void;
 }
 
+const countries = [
+  { code: '+84', name: 'Vietnam (Việt Nam)', flag: '🇻🇳' },
+  { code: '+1', name: 'USA / Canada', flag: '🇺🇸' },
+  { code: '+44', name: 'United Kingdom', flag: '🇬🇧' },
+  { code: '+81', name: 'Japan (Nhật Bản)', flag: '🇯🇵' },
+  { code: '+82', name: 'South Korea (Hàn Quốc)', flag: '🇰🇷' },
+  { code: '+65', name: 'Singapore', flag: '🇸🇬' },
+  { code: '+66', name: 'Thailand (Thái Lan)', flag: '🇹🇭' },
+  { code: '+60', name: 'Malaysia', flag: '🇲🇾' },
+  { code: '+62', name: 'Indonesia', flag: '🇮🇩' },
+  { code: '+63', name: 'Philippines', flag: '🇵🇭' },
+  { code: '+61', name: 'Australia (Úc)', flag: '🇦🇺' },
+  { code: '+33', name: 'France (Pháp)', flag: '🇫🇷' },
+  { code: '+49', name: 'Germany (Đức)', flag: '🇩🇪' },
+  { code: '+886', name: 'Taiwan (Đài Loan)', flag: '🇹🇼' },
+  { code: '+86', name: 'China (Trung Quốc)', flag: '🇨🇳' },
+  { code: '+7', name: 'Russia (Nga)', flag: '🇷🇺' },
+  { code: '+91', name: 'India (Ấn Độ)', flag: '🇮🇳' },
+];
+
 export const LoginPage: React.FC<LoginPageProps> = ({
   onLoginSuccess,
   lang,
@@ -66,6 +86,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
 
   // Phone number login states
   const [phoneNumber, setPhoneNumber] = useState<string>('');
+  const [selectedCountryCode, setSelectedCountryCode] = useState<string>('+84');
   const [phoneSessionId, setPhoneSessionId] = useState<string | null>(null);
   const [phoneStep, setPhoneStep] = useState<'enter_phone' | 'enter_code'>('enter_phone');
   const [verificationCode, setVerificationCode] = useState<string>('');
@@ -270,7 +291,21 @@ export const LoginPage: React.FC<LoginPageProps> = ({
       const apiIdNum = customApiId.trim() ? Number(customApiId.trim()) : undefined;
       const apiHashStr = customApiHash.trim() ? customApiHash.trim() : undefined;
 
-      const result = await sendPhoneCode(phoneNumber.trim(), apiIdNum, apiHashStr);
+      // Construct the formatted phone number
+      let formattedPhone = phoneNumber.trim().replace(/\s+/g, ''); // Remove all spaces
+      if (!formattedPhone.startsWith('+')) {
+        // Strip leading 0 if present
+        if (formattedPhone.startsWith('0')) {
+          formattedPhone = formattedPhone.substring(1);
+        }
+        // Prepend the selected country code
+        formattedPhone = `${selectedCountryCode}${formattedPhone}`;
+      }
+
+      // Save formatted number so downstream confirmation matches international standard
+      setPhoneNumber(formattedPhone);
+
+      const result = await sendPhoneCode(formattedPhone, apiIdNum, apiHashStr);
       setPhoneSessionId(result.sessionId);
       setIsCodeViaApp(result.isCodeViaApp);
       setPhoneStep('enter_code');
@@ -382,40 +417,239 @@ export const LoginPage: React.FC<LoginPageProps> = ({
             {/* Header / Intro */}
             <div className="p-6 sm:p-7 text-center border-b border-slate-100 dark:border-slate-800/80">
               <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-sky-50 dark:bg-sky-950/50 text-sky-500 mb-3 border border-sky-100 dark:border-sky-900/50">
-                <QrCode className="w-7 h-7" />
+                {authTab === 'qr' ? <QrCode className="w-7 h-7" /> : <Smartphone className="w-7 h-7" />}
               </div>
               <h1 className="text-xl sm:text-2xl font-black text-slate-900 dark:text-white tracking-tight">
                 {lang === 'vi' ? 'Đăng nhập với Telegram' : 'Log in to Telegram'}
               </h1>
               <p className="mt-1.5 text-xs sm:text-sm text-slate-500 dark:text-slate-400 max-w-sm mx-auto">
                 {lang === 'vi'
-                  ? 'Quét mã QR bằng ứng dụng Telegram trên điện thoại để bắt đầu sử dụng ổ đĩa không giới hạn'
-                  : 'Scan the QR code with your Telegram mobile app to access your unlimited storage'}
+                  ? 'Chọn đăng nhập bằng mã QR bảo mật hoặc số điện thoại để bắt đầu sử dụng ổ đĩa không giới hạn.'
+                  : 'Choose secure QR code scanning or phone number login to access your unlimited storage.'}
               </p>
-
-
             </div>
 
+            {/* Tab Selection */}
+            <div className="flex border-b border-slate-100 dark:border-slate-800/80 bg-slate-50/50 dark:bg-slate-900/20 p-1.5 gap-1">
+              <button
+                type="button"
+                onClick={() => {
+                  setAuthTab('qr');
+                  setErrorMessage(null);
+                }}
+                className={`flex-1 py-2 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 ${
+                  authTab === 'qr'
+                    ? 'bg-white dark:bg-slate-800 text-sky-600 dark:text-sky-400 shadow-sm'
+                    : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'
+                }`}
+              >
+                <QrCode className="w-3.5 h-3.5" />
+                <span>{lang === 'vi' ? 'Quét mã QR' : 'Scan QR Code'}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setAuthTab('phone');
+                  setErrorMessage(null);
+                }}
+                className={`flex-1 py-2 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 ${
+                  authTab === 'phone'
+                    ? 'bg-white dark:bg-slate-800 text-sky-600 dark:text-sky-400 shadow-sm'
+                    : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'
+                }`}
+              >
+                <Smartphone className="w-3.5 h-3.5" />
+                <span>{lang === 'vi' ? 'Số điện thoại' : 'Phone Number'}</span>
+              </button>
+            </div>
 
-              <div className="p-6 sm:p-7">
-                {/* Error Banner */}
-                {errorMessage && (
-                  <div className="mb-4 p-3.5 rounded-2xl bg-rose-50 text-rose-800 dark:bg-rose-950/50 dark:text-rose-300 border border-rose-200 dark:border-rose-900/60 text-xs flex items-start gap-2.5">
-                    <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5 text-rose-500" />
-                    <div className="flex-1">
-                      <p className="font-semibold">{errorMessage}</p>
-                      <button
-                        onClick={startRealQrFlow}
-                        className="mt-1.5 underline font-bold text-rose-600 dark:text-rose-400 hover:opacity-80"
-                      >
-                        {lang === 'vi' ? 'Thử lại kết nối MTProto' : 'Retry MTProto connection'}
-                      </button>
-                    </div>
+            <div className="p-6 sm:p-7">
+              {/* Error Banner */}
+              {errorMessage && (
+                <div className="mb-4 p-3.5 rounded-2xl bg-rose-50 text-rose-800 dark:bg-rose-950/50 dark:text-rose-300 border border-rose-200 dark:border-rose-900/60 text-xs flex items-start gap-2.5">
+                  <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5 text-rose-500" />
+                  <div className="flex-1">
+                    <p className="font-semibold">{errorMessage}</p>
+                    <button
+                      onClick={startRealQrFlow}
+                      className="mt-1.5 underline font-bold text-rose-600 dark:text-rose-400 hover:opacity-80"
+                    >
+                      {lang === 'vi' ? 'Thử lại kết nối MTProto' : 'Retry MTProto connection'}
+                    </button>
                   </div>
-                )}
+                </div>
+              )}
 
-                {/* 2FA Prompt if required */}
-                {is2faRequired ? (
+              {/* Dynamic Authentication View */}
+              {authTab === 'phone' ? (
+                /* Phone Login Flow */
+                <div className="space-y-4 animate-in fade-in duration-200">
+                  {phoneStep === 'enter_phone' ? (
+                    <form onSubmit={handleSendPhoneCode} className="space-y-4">
+                      <div className="p-4 rounded-2xl bg-sky-50/50 dark:bg-sky-950/20 border border-sky-100 dark:border-sky-900/40 text-center">
+                        <div className="w-10 h-10 rounded-full bg-sky-100 dark:bg-sky-900/50 text-sky-600 dark:text-sky-400 mx-auto flex items-center justify-center mb-2">
+                          <Smartphone className="w-5 h-5" />
+                        </div>
+                        <h3 className="text-sm font-bold text-sky-900 dark:text-sky-200">
+                          {lang === 'vi' ? 'Đăng nhập bằng Số điện thoại' : 'Log in with Phone Number'}
+                        </h3>
+                        <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 leading-relaxed">
+                          {lang === 'vi'
+                            ? 'Nhập số điện thoại Telegram của bạn (kèm mã quốc gia, ví dụ: +84912345678)'
+                            : 'Enter your Telegram phone number with country code (e.g., +84912345678)'}
+                        </p>
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5">
+                          {lang === 'vi' ? 'Mã vùng & Số điện thoại' : 'Country Code & Phone Number'}
+                        </label>
+                        <div className="flex gap-2">
+                          <div className="w-[125px] flex-shrink-0">
+                            <select
+                              value={selectedCountryCode}
+                              onChange={e => setSelectedCountryCode(e.target.value)}
+                              className="w-full px-2.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white text-xs sm:text-sm focus:ring-2 focus:ring-sky-500 focus:outline-none h-[42px]"
+                            >
+                              {countries.map(c => (
+                                <option key={c.code} value={c.code}>
+                                  {c.flag} {c.code}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                          <div className="flex-1">
+                            <input
+                              type="tel"
+                              value={phoneNumber}
+                              onChange={e => setPhoneNumber(e.target.value)}
+                              placeholder={selectedCountryCode === '+84' ? '0398819201' : '912345678'}
+                              className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-sky-500 focus:outline-none h-[42px]"
+                              required
+                              autoFocus
+                            />
+                          </div>
+                        </div>
+                        <p className="text-[11px] text-slate-400 dark:text-slate-500 mt-1.5 leading-normal">
+                          {lang === 'vi'
+                            ? 'Mẹo: Bạn có thể nhập số 0 ở đầu (ví dụ: 0398819201), hệ thống sẽ tự động chuyển thành +84398819201.'
+                            : 'Tip: You can enter with a leading 0 (e.g., 0398819201). System will auto-format to international standard.'}
+                        </p>
+                      </div>
+
+                      <button
+                        type="submit"
+                        disabled={isSendingCode || !phoneNumber}
+                        className="w-full py-3 rounded-2xl font-bold text-sm text-white bg-sky-600 hover:bg-sky-500 disabled:opacity-50 transition-all flex items-center justify-center gap-2 shadow-lg shadow-sky-600/25"
+                      >
+                        {isSendingCode ? (
+                          <>
+                            <RefreshCw className="w-4 h-4 animate-spin" />
+                            <span>{lang === 'vi' ? 'Đang gửi mã...' : 'Sending code...'}</span>
+                          </>
+                        ) : (
+                          <>
+                            <ArrowRight className="w-4 h-4" />
+                            <span>{lang === 'vi' ? 'Gửi mã xác nhận' : 'Send verification code'}</span>
+                          </>
+                        )}
+                      </button>
+                    </form>
+                  ) : (
+                    <form onSubmit={handleVerifyPhoneCode} className="space-y-4">
+                      <div className="p-4 rounded-2xl bg-amber-50/50 dark:bg-amber-950/20 border border-amber-100 dark:border-amber-900/40 text-center">
+                        <div className="w-10 h-10 rounded-full bg-amber-100 dark:bg-amber-900/50 text-amber-600 dark:text-amber-400 mx-auto flex items-center justify-center mb-2">
+                          <ShieldCheck className="w-5 h-5" />
+                        </div>
+                        <h3 className="text-sm font-bold text-amber-900 dark:text-amber-200">
+                          {lang === 'vi' ? 'Nhập mã xác minh' : 'Enter Verification Code'}
+                        </h3>
+                        <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 leading-relaxed">
+                          {lang === 'vi'
+                            ? `Mã xác nhận OTP đã được gửi về ứng dụng Telegram của số điện thoại ${phoneNumber}. Vui lòng kiểm tra và nhập mã dưới đây.`
+                            : `A verification OTP code has been sent to the Telegram app on ${phoneNumber}.`}
+                        </p>
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5">
+                          {lang === 'vi' ? 'Mã xác nhận (OTP)' : 'Verification Code (OTP)'}
+                        </label>
+                        <input
+                          type="text"
+                          pattern="[0-9]*"
+                          maxLength={6}
+                          value={verificationCode}
+                          onChange={e => setVerificationCode(e.target.value)}
+                          placeholder="12345"
+                          className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white text-sm tracking-widest text-center font-mono font-bold focus:ring-2 focus:ring-sky-500 focus:outline-none"
+                          required
+                          autoFocus
+                        />
+                      </div>
+
+                      {phone2faNeeded && (
+                        <div className="space-y-1.5 animate-in slide-in-from-top-2 duration-200">
+                          <label className="block text-xs font-bold text-slate-700 dark:text-slate-300">
+                            {lang === 'vi' ? 'Mật khẩu Cloud Password (2FA)' : '2FA Cloud Password'}
+                          </label>
+                          <div className="relative">
+                            <input
+                              type={show2faPassword ? 'text' : 'password'}
+                              value={phone2faPassword}
+                              onChange={e => setPhone2faPassword(e.target.value)}
+                              placeholder={lang === 'vi' ? 'Nhập mật khẩu 2FA của bạn...' : 'Enter 2FA password...'}
+                              className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-sky-500 focus:outline-none pr-10"
+                              required
+                            />
+                            <button
+                              type="button"
+                              onClick={() => setShow2faPassword(!show2faPassword)}
+                              className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+                            >
+                              {show2faPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="flex gap-2.5 pt-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setPhoneStep('enter_phone');
+                            setPhone2faNeeded(false);
+                            setVerificationCode('');
+                            setPhone2faPassword('');
+                          }}
+                          className="flex-1 py-3 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 font-bold text-sm transition-all"
+                        >
+                          {lang === 'vi' ? 'Quay lại' : 'Back'}
+                        </button>
+                        <button
+                          type="submit"
+                          disabled={isVerifyingCode || !verificationCode}
+                          className="flex-1 py-3 rounded-2xl font-bold text-sm text-white bg-sky-600 hover:bg-sky-500 disabled:opacity-50 transition-all flex items-center justify-center gap-2 shadow-lg shadow-sky-600/25"
+                        >
+                          {isVerifyingCode ? (
+                            <>
+                              <RefreshCw className="w-4 h-4 animate-spin" />
+                              <span>{lang === 'vi' ? 'Đang xác thực...' : 'Verifying...'}</span>
+                            </>
+                          ) : (
+                            <>
+                              <ShieldCheck className="w-4 h-4" />
+                              <span>{lang === 'vi' ? 'Đăng nhập' : 'Log In'}</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    </form>
+                  )}
+                </div>
+              ) : (
+                /* Standard QR Display & QR 2FA Flow */
+                is2faRequired ? (
                   <form onSubmit={handleVerify2fa} className="space-y-4">
                     <div className="p-4 rounded-2xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800/60 text-center">
                       <div className="w-10 h-10 rounded-full bg-amber-100 dark:bg-amber-900/50 text-amber-600 dark:text-amber-400 mx-auto flex items-center justify-center mb-2">
@@ -545,13 +779,20 @@ export const LoginPage: React.FC<LoginPageProps> = ({
 
                     {/* Desktop Deep Link */}
                     {qrDeepLink && (
-                      <a
-                        href={qrDeepLink}
-                        className="mt-4 w-full py-2.5 rounded-2xl border border-sky-200 dark:border-sky-800/70 bg-sky-50/60 dark:bg-sky-950/30 text-sky-700 dark:text-sky-300 hover:bg-sky-100 dark:hover:bg-sky-950/60 text-xs font-bold transition-all flex items-center justify-center gap-1.5"
-                      >
-                        <ExternalLink className="w-3.5 h-3.5" />
-                        <span>{lang === 'vi' ? 'Mở Telegram trên máy này để kết nối' : 'Open Telegram App on this device'}</span>
-                      </a>
+                      <div className="mt-4 w-full">
+                        <a
+                          href={qrDeepLink}
+                          className="w-full py-2.5 rounded-2xl border border-sky-200 dark:border-sky-800/70 bg-sky-50/60 dark:bg-sky-950/30 text-sky-700 dark:text-sky-300 hover:bg-sky-100 dark:hover:bg-sky-950/60 text-xs font-bold transition-all flex items-center justify-center gap-1.5 animate-pulse"
+                        >
+                          <ExternalLink className="w-3.5 h-3.5" />
+                          <span>{lang === 'vi' ? 'Mở Telegram trên máy này để kết nối' : 'Open Telegram App on this device'}</span>
+                        </a>
+                        <p className="mt-2 px-1 text-[11px] text-sky-600/90 dark:text-sky-400/90 text-center leading-relaxed font-medium">
+                          {lang === 'vi'
+                            ? '👉 Nhấn nút trên để mở ứng dụng Telegram (Desktop/Mobile) đang đăng nhập trên thiết bị này, sau đó nhấn "Confirm" (Cho phép) để tự động đăng nhập ngay lập tức!'
+                            : '👉 Click the button above to launch your Telegram app on this device, then click "Confirm" to authorize instantly without camera scanning!'}
+                        </p>
+                      </div>
                     )}
 
                     {/* Instructions */}
@@ -599,7 +840,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                       </div>
                     </div>
                   </div>
-                )}
+                ))}
               </div>
 
             {/* Advanced API ID / Hash (Collapsible) */}

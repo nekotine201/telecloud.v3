@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import JSZip from 'jszip';
 import confetti from 'canvas-confetti';
 import {
   Bookmark,
@@ -568,7 +569,12 @@ export default function App() {
   // Drag & drop handlers on root container
   const handleDragEnter = (e: React.DragEvent) => {
     // If dragging an internal file to move it into a folder, don't trigger upload overlay
-    if (e.dataTransfer.types.includes('application/x-teledrive-file-id')) return;
+    if (
+      !e.dataTransfer.types.includes('Files') ||
+      e.dataTransfer.types.includes('application/x-teledrive-file-id')
+    ) {
+      return;
+    }
     e.preventDefault();
     e.stopPropagation();
     setIsDragOver(true);
@@ -582,14 +588,24 @@ export default function App() {
   };
 
   const handleDragOver = (e: React.DragEvent) => {
-    if (e.dataTransfer.types.includes('application/x-teledrive-file-id')) return;
+    if (
+      !e.dataTransfer.types.includes('Files') ||
+      e.dataTransfer.types.includes('application/x-teledrive-file-id')
+    ) {
+      return;
+    }
     e.preventDefault();
     e.stopPropagation();
   };
 
   const handleDrop = async (e: React.DragEvent) => {
     setIsDragOver(false);
-    if (e.dataTransfer.types.includes('application/x-teledrive-file-id')) return;
+    if (
+      !e.dataTransfer.types.includes('Files') ||
+      e.dataTransfer.types.includes('application/x-teledrive-file-id')
+    ) {
+      return;
+    }
     e.preventDefault();
     e.stopPropagation();
     try {
@@ -620,16 +636,23 @@ export default function App() {
 
   // Handle uploaded files (single files, batch files, and full folder hierarchies)
   const handleProcessFiles = async (
-    items: Array<File | { file: File; relativePath?: string }>,
+    items: Array<File | { file: File; relativePath?: string; filePath?: string; buffer?: Buffer }>,
     isEncrypted = false
   ) => {
     if (items.length === 0) return;
 
-    const normalizedItems: Array<{ file: File; relativePath?: string }> = items.map(it => {
+    const normalizedItems: Array<{ file: File; relativePath?: string; filePath?: string; buffer?: Buffer }> = items.map(it => {
       if (it instanceof File) {
-        return { file: it, relativePath: (it as any).webkitRelativePath || it.name };
+        return { 
+          file: it, 
+          relativePath: (it as any).webkitRelativePath || it.name,
+          filePath: (it as any).path || (it as any).filePath,
+        };
       }
-      return it;
+      return {
+        ...it,
+        filePath: it.filePath || (it.file as any)?.path || (it.file as any)?.filePath,
+      };
     });
 
     const activeDest = destinations.find(d => d.id === currentDestinationId) || destinations[0];
@@ -673,7 +696,7 @@ export default function App() {
     };
 
     // Determine target folderId for each file
-    const fileTargets: Array<{ file: File; relativePath: string; targetFolderId: string | null }> = [];
+    const fileTargets: Array<{ file: File; relativePath: string; targetFolderId: string | null; filePath?: string; buffer?: Buffer }> = [];
 
     for (const item of normalizedItems) {
       const rel = (item.relativePath || item.file.name).replace(/\\/g, '/');
@@ -682,9 +705,9 @@ export default function App() {
       if (parts.length > 1) {
         const folderSegments = parts.slice(0, -1);
         const targetFolderId = getOrCreateFolderId(folderSegments);
-        fileTargets.push({ file: item.file, relativePath: rel, targetFolderId });
+        fileTargets.push({ file: item.file, relativePath: rel, targetFolderId, filePath: item.filePath, buffer: item.buffer });
       } else {
-        fileTargets.push({ file: item.file, relativePath: rel, targetFolderId: currentFolderId });
+        fileTargets.push({ file: item.file, relativePath: rel, targetFolderId: currentFolderId, filePath: item.filePath, buffer: item.buffer });
       }
     }
 
@@ -696,7 +719,7 @@ export default function App() {
     }
 
     // 2. Upload files in sequence with live progress and cancel support
-    for (const { file, relativePath, targetFolderId } of fileTargets) {
+    for (const { file, relativePath, targetFolderId, filePath, buffer } of fileTargets) {
       const taskId = `task-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
       const abortController = new AbortController();
 
@@ -745,7 +768,9 @@ export default function App() {
             );
           },
           abortController.signal,
-          activeDest.type === 'saved' ? 'me' : activeDest.chatId
+          activeDest.type === 'saved' ? 'me' : activeDest.chatId,
+          filePath,
+          buffer
         );
 
         const enrichedFile: DriveFile = {
@@ -768,11 +793,12 @@ export default function App() {
 
         showToast(`Tệp "${file.name}" đã tải lên Telegram Cloud thành công!`);
       } catch (err: any) {
+        const ext = file.name.split('.').pop() || '';
         if (abortController.signal.aborted || err?.message?.includes('bị dừng') || err?.message?.includes('hủy')) {
-          console.log('Upload cancelled by user');
+          console.log(`[Upload Cancelled] Tệp "${file.name}" (.${ext}) đã bị người dùng hủy`);
           setUploadTasks(prev => prev.filter(t => t.id !== taskId));
         } else {
-          console.error('Upload failed', err);
+          console.error(`[Upload Error] Tên file: "${file.name}" | Đuôi: ".${ext}" | Nguyên nhân:`, err?.message || err);
           setUploadTasks(prev =>
             prev.map(t => (t.id === taskId ? { ...t, status: 'error', error: err?.message || 'Lỗi tải lên' } : t))
           );
@@ -854,6 +880,131 @@ export default function App() {
     showToast(`Đang tải về (qua Proxy): ${file.name}`);
   };
 
+  const handleDownloadItemsAsZip = async (selectedFileIdsArray: string[], selectedFolderIdsArray: string[]) => {
+    interface ZipItem {
+      file: DriveFile;
+      relativePath: string;
+    }
+
+    const collectFilesRec = (
+      folderId: string,
+      currentPath: string,
+      foldersList: DriveFolder[],
+      filesList: DriveFile[],
+      collected: ZipItem[]
+    ) => {
+      const subfolders = foldersList.filter(f => f.parentId === folderId && !f.isDeleted);
+      const currentFiles = filesList.filter(f => f.folderId === folderId && !f.isDeleted);
+
+      currentFiles.forEach(f => {
+        collected.push({
+          file: f,
+          relativePath: currentPath ? `${currentPath}/${f.name}` : f.name
+        });
+      });
+
+      subfolders.forEach(sub => {
+        const nextPath = currentPath ? `${currentPath}/${sub.name}` : sub.name;
+        collectFilesRec(sub.id, nextPath, foldersList, filesList, collected);
+      });
+    };
+
+    try {
+      showToast("Đang chuẩn bị nén thư mục và tệp tải xuống...");
+      const collected: ZipItem[] = [];
+
+      selectedFolderIdsArray.forEach(folderId => {
+        const folderObj = folders.find(f => f.id === folderId);
+        if (folderObj) {
+          collectFilesRec(folderId, folderObj.name, folders, files, collected);
+        }
+      });
+
+      selectedFileIdsArray.forEach(fileId => {
+        const fileObj = files.find(f => f.id === fileId);
+        if (fileObj) {
+          const isAlreadyCollected = collected.some(item => item.file.id === fileObj.id);
+          if (!isAlreadyCollected) {
+            collected.push({
+              file: fileObj,
+              relativePath: fileObj.name
+            });
+          }
+        }
+      });
+
+      if (collected.length === 0) {
+        showToast("Không tìm thấy tệp nào để tải xuống");
+        return;
+      }
+
+      showToast(`Bắt đầu tải xuống ${collected.length} tệp... Vui lòng không đóng trang web.`);
+
+      const zip = new JSZip();
+      const { downloadFileDirectlyFromTelegram } = await import('./services/clientTelegram');
+
+      for (let i = 0; i < collected.length; i++) {
+        const item = collected[i];
+        showToast(`Đang tải tệp (${i + 1}/${collected.length}): ${item.file.name}`);
+        let fileBlob: Blob | null = null;
+
+        if (user?.sessionString && item.file.telegramMessageId) {
+          try {
+            fileBlob = await downloadFileDirectlyFromTelegram(
+              user.sessionString,
+              item.file.telegramChatId || 'me',
+              item.file.telegramMessageId,
+              item.file.name
+            );
+          } catch (err) {
+            console.error(`Failed direct download for ${item.file.name}, trying fallback:`, err);
+          }
+        }
+
+        if (!fileBlob) {
+          try {
+            const response = await fetch(`/api/download?fileId=${item.file.id}`);
+            if (response.ok) {
+              fileBlob = await response.blob();
+            }
+          } catch (err) {
+            console.error(`Fallback failed for ${item.file.name}:`, err);
+          }
+        }
+
+        if (fileBlob) {
+          zip.file(item.relativePath, fileBlob);
+        } else {
+          console.warn(`Bỏ qua tệp do lỗi tải xuống: ${item.file.name}`);
+        }
+      }
+
+      showToast("Đang tạo tệp nén ZIP...");
+      const zipBlob = await zip.generateAsync({ type: 'blob' });
+
+      const url = URL.createObjectURL(zipBlob);
+      const a = document.createElement('a');
+      a.href = url;
+      
+      let zipName = 'TeleCloud_Archive.zip';
+      if (selectedFolderIdsArray.length === 1 && selectedFileIdsArray.length === 0) {
+        const folderObj = folders.find(f => f.id === selectedFolderIdsArray[0]);
+        if (folderObj) zipName = `${folderObj.name}.zip`;
+      }
+      
+      a.download = zipName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+
+      showToast(`✓ Đã tải và nén thành công: ${zipName}`);
+    } catch (error: any) {
+      console.error("ZIP download failed:", error);
+      showToast(`Lỗi tải xuống thư mục: ${error.message || 'Không rõ lỗi'}`);
+    }
+  };
+
   const handleToggleStarFile = (file: DriveFile) => {
     setFiles(prev =>
       prev.map(f => (f.id === file.id ? { ...f, isStarred: !f.isStarred } : f))
@@ -915,13 +1066,14 @@ export default function App() {
     showToast(`Đã đổi tên tệp thành "${newName}"`);
   };
 
-  const handleDuplicateFile = (file: DriveFile) => {
+  const handleDuplicateFile = (file: DriveFile, targetFolderId?: string | null) => {
     const ext = file.name.includes('.') ? '.' + file.name.split('.').pop() : '';
     const base = file.name.includes('.') ? file.name.substring(0, file.name.lastIndexOf('.')) : file.name;
     const duplicated: DriveFile = {
       ...file,
       id: `file-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
       name: `${base} (bản sao)${ext}`,
+      folderId: targetFolderId !== undefined ? targetFolderId : file.folderId,
       createdAt: Date.now(),
       updatedAt: Date.now(),
     };
@@ -978,6 +1130,20 @@ export default function App() {
       }
       return prev.filter(t => t.id !== taskId);
     });
+  };
+
+  const handleCancelAllTasks = () => {
+    setUploadTasks(prev => {
+      prev.forEach(t => {
+        if (t.status === 'uploading' || t.status === 'encrypting') {
+          if (t.abortController) {
+            t.abortController.abort();
+          }
+        }
+      });
+      return prev.filter(t => t.status !== 'uploading' && t.status !== 'encrypting');
+    });
+    showToast('Đã hủy toàn bộ tệp đang tải lên');
   };
 
   const handleClearCompletedTasks = () => {
@@ -1146,6 +1312,7 @@ export default function App() {
           onNavigateFolder={setCurrentFolderId}
           onOpenFilePreview={setPreviewFile}
           onDownloadFile={handleDownloadFile}
+          onDownloadItemsAsZip={handleDownloadItemsAsZip}
           onForwardFile={setForwardFile}
           onToggleStarFile={handleToggleStarFile}
           onToggleStarFolder={handleToggleStarFolder}
@@ -1159,6 +1326,8 @@ export default function App() {
           onOpenFileUpload={handleOpenFileUpload}
           onOpenFolderUpload={handleOpenFolderUpload}
           onOpenCreateFolder={() => setShowCreateFolderModal(true)}
+          onProcessFiles={handleProcessFiles}
+          onShowToast={showToast}
           isDragOver={isDragOver}
           lang={settings.language}
           isSyncing={isSyncing}
@@ -1248,6 +1417,7 @@ export default function App() {
       <UploadManager
         tasks={uploadTasks}
         onCancelTask={handleCancelTask}
+        onCancelAllTasks={handleCancelAllTasks}
         onClearCompleted={handleClearCompletedTasks}
         lang={settings.language}
       />

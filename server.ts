@@ -1244,7 +1244,7 @@ async function startServer() {
   // ==========================================
   // 10a. Chunked Upload to Telegram MTProto (Supports up to 2GB)
   // ==========================================
-  app.post('/api/telegram/upload-chunk', chunkUpload.single('chunk'), async (req, res) => {
+  app.post('/api/telegram/upload-chunk', chunkUpload.single('chunk') as any, async (req, res) => {
     const {
       uploadId,
       chunkIndex: chunkIdxStr,
@@ -1474,7 +1474,7 @@ async function startServer() {
   // ==========================================
   // 10b. Upload Single File to Telegram (Direct)
   // ==========================================
-  app.post('/api/telegram/upload', upload.single('file'), async (req, res) => {
+  app.post('/api/telegram/upload', upload.single('file') as any, async (req, res) => {
     const sessionString = req.body.sessionString;
     const chatId = req.body.chatId; // "me" for Saved Messages, or channel/group ID
     const caption = req.body.caption;

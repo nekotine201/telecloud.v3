@@ -18,6 +18,7 @@ import { translations } from '../services/i18n';
 interface UploadManagerProps {
   tasks: UploadTask[];
   onCancelTask: (taskId: string) => void;
+  onCancelAllTasks?: () => void;
   onClearCompleted: () => void;
   lang: Language;
 }
@@ -25,6 +26,7 @@ interface UploadManagerProps {
 export const UploadManager: React.FC<UploadManagerProps> = ({
   tasks,
   onCancelTask,
+  onCancelAllTasks,
   onClearCompleted,
   lang,
 }) => {
@@ -92,6 +94,20 @@ export const UploadManager: React.FC<UploadManagerProps> = ({
       {/* Expandable Task List */}
       {!isMinimized && (
         <div className="max-h-80 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-800 p-2 space-y-1">
+          {activeTasks.length > 0 && onCancelAllTasks && (
+            <div className="flex items-center justify-between px-2.5 py-1.5 pb-2 text-xs border-b border-slate-100 dark:border-slate-800 no-marquee">
+              <span className="text-slate-500 font-medium">Danh sách tệp tải lên</span>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onCancelAllTasks();
+                }}
+                className="text-rose-500 hover:text-rose-600 font-bold text-[11px] flex items-center gap-1 transition-colors hover:underline"
+              >
+                Hủy tất cả tệp ({activeTasks.length})
+              </button>
+            </div>
+          )}
           {tasks.map(task => {
             const loadedBytes = Math.round((task.progress / 100) * task.size);
             const folderPart = task.folderPath && task.folderPath.includes('/')

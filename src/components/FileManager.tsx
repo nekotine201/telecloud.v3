@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import JSZip from 'jszip';
 import {
   Folder,
   File,
@@ -16,6 +17,8 @@ import {
   ArrowUpDown,
   RefreshCw,
   Copy,
+  Scissors,
+  ClipboardPaste,
   Edit2,
   FolderInput,
   Info,
@@ -37,6 +40,9 @@ import {
   ShieldCheck,
   Eye,
   Link,
+  FolderPlus,
+  UploadCloud,
+  FolderUp,
 } from 'lucide-react';
 import {
   DriveFile,
@@ -208,19 +214,22 @@ interface FileManagerProps {
   onNavigateFolder: (folderId: string | null) => void;
   onOpenFilePreview: (file: DriveFile) => void;
   onDownloadFile: (file: DriveFile) => void;
+  onDownloadItemsAsZip?: (fileIds: string[], folderIds: string[]) => void;
   onForwardFile: (file: DriveFile) => void;
   onToggleStarFile: (file: DriveFile) => void;
   onToggleStarFolder: (folder: DriveFolder) => void;
   onDeleteFile: (file: DriveFile, permanent?: boolean) => void;
   onDeleteBatchFiles?: (files: DriveFile[], permanent?: boolean) => void;
   onRenameFile: (file: DriveFile, newName: string) => void;
-  onDuplicateFile: (file: DriveFile) => void;
+  onDuplicateFile: (file: DriveFile, targetFolderId?: string | null) => void;
   onMoveFileToFolder: (file: DriveFile, folderId: string | null) => void;
   onDeleteFolder?: (folderId: string) => void;
   onRenameFolder?: (folderId: string, newName: string) => void;
   onOpenFileUpload: () => void;
   onOpenFolderUpload?: () => void;
   onOpenCreateFolder: () => void;
+  onProcessFiles?: (files: File[]) => void;
+  onShowToast?: (message: string) => void;
   isDragOver: boolean;
   lang: Language;
   isSyncing?: boolean;
@@ -244,6 +253,7 @@ export const FileManager: React.FC<FileManagerProps> = ({
   onNavigateFolder,
   onOpenFilePreview,
   onDownloadFile,
+  onDownloadItemsAsZip,
   onForwardFile,
   onToggleStarFile,
   onToggleStarFolder,
@@ -257,11 +267,16 @@ export const FileManager: React.FC<FileManagerProps> = ({
   onOpenFileUpload,
   onOpenFolderUpload,
   onOpenCreateFolder,
+  onProcessFiles,
+  onShowToast,
   isDragOver,
   lang,
   isSyncing = false,
   onSync,
 }) => {
+  // Current active folder object
+  const currentFolder = currentFolderId ? folders.find(f => f.id === currentFolderId) : null;
+
   // Context Menu State
   const [contextMenu, setContextMenu] = useState<{
     x: number;
@@ -277,6 +292,7 @@ export const FileManager: React.FC<FileManagerProps> = ({
   // Multi-select state
   const [isMultiSelectMode, setIsMultiSelectMode] = useState(false);
   const [selectedFileIds, setSelectedFileIds] = useState<Set<string>>(new Set());
+  const [selectedFolderIds, setSelectedFolderIds] = useState<Set<string>>(new Set());
   const [showBatchDeleteModal, setShowBatchDeleteModal] = useState(false);
 
   // Rename modal state
@@ -299,6 +315,53 @@ export const FileManager: React.FC<FileManagerProps> = ({
   // Copy link feedback state
   const [copiedShareId, setCopiedShareId] = useState<string | null>(null);
   const [copiedTgId, setCopiedTgId] = useState<string | null>(null);
+
+  // Internal clipboard state for Ctrl+C / Ctrl+X / Ctrl+V
+  const [internalClipboard, setInternalClipboard] = useState<{
+    action: 'copy' | 'cut';
+    fileIds: string[];
+  } | null>(null);
+
+  // Rubber-band / Marquee selection box state
+  const contentAreaRef = useRef<HTMLDivElement | null>(null);
+  const [selectionBox, setSelectionBox] = useState<{
+    startX: number;
+    startY: number;
+    currentX: number;
+    currentY: number;
+    active: boolean;
+  } | null>(null);
+
+  const isMouseDownRef = useRef(false);
+  const startPointRef = useRef<{ x: number; y: number } | null>(null);
+  const hasMovedEnoughRef = useRef(false);
+  const initialSelectedRef = useRef<Set<string>>(new Set());
+
+  const handleInternalPaste = useCallback(() => {
+    if (!internalClipboard || internalClipboard.fileIds.length === 0) return;
+    const targetFolderId = currentFolderId;
+    const targetFiles = files.filter(f => internalClipboard.fileIds.includes(f.id));
+    if (targetFiles.length === 0) return;
+
+    if (internalClipboard.action === 'copy') {
+      targetFiles.forEach(f => {
+        onDuplicateFile(f, targetFolderId);
+      });
+      if (onShowToast) {
+        onShowToast(`Đã dán và tạo bản sao cho ${targetFiles.length} tệp`);
+      }
+    } else if (internalClipboard.action === 'cut') {
+      targetFiles.forEach(f => {
+        if (f.folderId !== targetFolderId) {
+          onMoveFileToFolder(f, targetFolderId);
+        }
+      });
+      if (onShowToast) {
+        onShowToast(`Đã chuyển ${targetFiles.length} tệp vào ${currentFolder?.name || 'thư mục'}`);
+      }
+      setInternalClipboard(null);
+    }
+  }, [internalClipboard, files, currentFolderId, currentFolder, onDuplicateFile, onMoveFileToFolder, onShowToast]);
 
   // Close context menu on outside click
   useEffect(() => {
@@ -343,8 +406,9 @@ export const FileManager: React.FC<FileManagerProps> = ({
     if (file.isDeleted) return false;
     if (!isFileInDestination(file, activeDestination)) return false;
     if (currentFolderId) return file.folderId === currentFolderId;
-    if (currentView === 'saved') {
-      return true;
+    if (currentView === 'saved' || currentView === 'all') {
+      // Ở mục tệp tin ngoài (root): chỉ tính những file lưu ngoài không có folder
+      return !file.folderId || file.folderId.trim() === '';
     }
     if (currentView === 'starred') return file.isStarred;
     if (currentView === 'recent' || currentView === 'links') return true;
@@ -376,14 +440,19 @@ export const FileManager: React.FC<FileManagerProps> = ({
       if (!matchName && !matchStorage) return false;
     }
 
-    // Inside a specific folder
+    // Inside a specific folder vs Root level
     if (currentFolderId) {
       return file.folderId === currentFolderId && !file.isDeleted;
+    } else {
+      // Ở mục tệp tin ngoài (root): không hiện file con trong folder nữa, chỉ hiện những file lưu ngoài không có folder
+      if (currentView === 'saved' || currentView === 'all') {
+        if (file.folderId && file.folderId.trim() !== '') return false;
+      }
     }
 
     // View filter
     if (currentView === 'saved') {
-      // already filtered by isFileInDestination above
+      // already filtered by isFileInDestination and root check above
     } else if (currentView === 'recent') {
       if (file.isDeleted) return false;
     } else if (currentView === 'links') {
@@ -427,9 +496,6 @@ export const FileManager: React.FC<FileManagerProps> = ({
     if (currentView === 'recent' || currentView === 'document' || currentView === 'links') return false;
     return f.parentId === currentFolderId && !f.isDeleted;
   });
-
-  // Current active folder object
-  const currentFolder = currentFolderId ? folders.find(f => f.id === currentFolderId) : null;
 
   // Current View Title
   const getViewTitle = () => {
@@ -475,17 +541,36 @@ export const FileManager: React.FC<FileManagerProps> = ({
     });
   };
 
+  const toggleSelectFolder = (id: string, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    setSelectedFolderIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
   const handleSelectAll = () => {
-    if (selectedFileIds.size === sortedFiles.length) {
+    const allFilesSelected = selectedFileIds.size === sortedFiles.length;
+    const allFoldersSelected = selectedFolderIds.size === displayedFolders.length;
+    
+    if (allFilesSelected && allFoldersSelected) {
       setSelectedFileIds(new Set());
+      setSelectedFolderIds(new Set());
     } else {
       setSelectedFileIds(new Set(sortedFiles.map(f => f.id)));
+      setSelectedFolderIds(new Set(displayedFolders.map(fd => fd.id)));
     }
   };
 
   const handleBatchDownload = () => {
-    const toDownload = sortedFiles.filter(f => selectedFileIds.has(f.id));
-    toDownload.forEach(f => onDownloadFile(f));
+    if (onDownloadItemsAsZip) {
+      onDownloadItemsAsZip(Array.from(selectedFileIds), Array.from(selectedFolderIds));
+    } else {
+      const toDownload = sortedFiles.filter(f => selectedFileIds.has(f.id));
+      toDownload.forEach(f => onDownloadFile(f));
+    }
   };
 
   const handleBatchDelete = () => {
@@ -505,6 +590,241 @@ export const FileManager: React.FC<FileManagerProps> = ({
     setSelectedFileIds(new Set());
     setIsMultiSelectMode(false);
     setShowBatchDeleteModal(false);
+  };
+
+  // Keyboard shortcut listeners (Ctrl+A, Ctrl+C, Ctrl+X, Ctrl+V, Esc) & OS Clipboard Paste
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const activeEl = document.activeElement;
+      if (
+        activeEl &&
+        (activeEl.tagName === 'INPUT' ||
+          activeEl.tagName === 'TEXTAREA' ||
+          (activeEl as HTMLElement).isContentEditable)
+      ) {
+        return;
+      }
+
+      const isCtrlOrCmd = e.ctrlKey || e.metaKey;
+
+      // 1. Ctrl + A: Chọn tất cả file
+      if (isCtrlOrCmd && (e.key === 'a' || e.key === 'A')) {
+        e.preventDefault();
+        if (sortedFiles.length > 0) {
+          setIsMultiSelectMode(true);
+          setSelectedFileIds(new Set(sortedFiles.map(f => f.id)));
+          if (onShowToast) {
+            onShowToast(`Đã chọn tất cả ${sortedFiles.length} tệp`);
+          }
+        }
+        return;
+      }
+
+      // 2. Ctrl + C: Sao chép tệp đã chọn
+      if (isCtrlOrCmd && (e.key === 'c' || e.key === 'C')) {
+        if (selectedFileIds.size > 0) {
+          e.preventDefault();
+          setInternalClipboard({
+            action: 'copy',
+            fileIds: Array.from(selectedFileIds),
+          });
+          if (onShowToast) {
+            onShowToast(`Đã sao chép ${selectedFileIds.size} tệp vào bộ nhớ tạm (Nhấn Ctrl+V để dán)`);
+          }
+        }
+        return;
+      }
+
+      // 3. Ctrl + X: Cắt tệp đã chọn
+      if (isCtrlOrCmd && (e.key === 'x' || e.key === 'X')) {
+        if (selectedFileIds.size > 0) {
+          e.preventDefault();
+          setInternalClipboard({
+            action: 'cut',
+            fileIds: Array.from(selectedFileIds),
+          });
+          if (onShowToast) {
+            onShowToast(`Đã cắt ${selectedFileIds.size} tệp (Nhấn Ctrl+V để dán vào thư mục đích)`);
+          }
+        }
+        return;
+      }
+
+      // 4. Ctrl + V: Dán tệp nội bộ
+      if (isCtrlOrCmd && (e.key === 'v' || e.key === 'V')) {
+        if (internalClipboard && internalClipboard.fileIds.length > 0) {
+          e.preventDefault();
+          handleInternalPaste();
+        }
+        return;
+      }
+
+      // Escape: Thoát multi-select
+      if (e.key === 'Escape') {
+        if (selectedFileIds.size > 0 || selectedFolderIds.size > 0 || isMultiSelectMode) {
+          setSelectedFileIds(new Set());
+          setSelectedFolderIds(new Set());
+          setIsMultiSelectMode(false);
+        }
+      }
+    };
+
+    const handlePaste = (e: ClipboardEvent) => {
+      const activeEl = document.activeElement;
+      if (
+        activeEl &&
+        (activeEl.tagName === 'INPUT' ||
+          activeEl.tagName === 'TEXTAREA' ||
+          (activeEl as HTMLElement).isContentEditable)
+      ) {
+        return;
+      }
+
+      // Paste files from OS clipboard (images, screenshots, files copied from desktop)
+      const clipboardFiles = e.clipboardData?.files;
+      if (clipboardFiles && clipboardFiles.length > 0) {
+        e.preventDefault();
+        const filesArray = Array.from(clipboardFiles);
+        if (onProcessFiles) {
+          if (onShowToast) {
+            onShowToast(`Đang tải lên ${filesArray.length} tệp từ bộ nhớ tạm (clipboard)...`);
+          }
+          onProcessFiles(filesArray);
+        }
+        return;
+      }
+
+      // Otherwise paste from internal clipboard
+      if (internalClipboard && internalClipboard.fileIds.length > 0) {
+        e.preventDefault();
+        handleInternalPaste();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('paste', handlePaste);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('paste', handlePaste);
+    };
+  }, [sortedFiles, selectedFileIds, internalClipboard, handleInternalPaste, onProcessFiles, onShowToast, isMultiSelectMode]);
+
+  // Rubber-band / Marquee selection (mouse drag)
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isMouseDownRef.current || !startPointRef.current) return;
+
+      const dx = e.clientX - startPointRef.current.x;
+      const dy = e.clientY - startPointRef.current.y;
+      const dist = Math.hypot(dx, dy);
+
+      if (dist > 4) {
+        hasMovedEnoughRef.current = true;
+
+        const left = Math.min(startPointRef.current.x, e.clientX);
+        const top = Math.min(startPointRef.current.y, e.clientY);
+        const right = Math.max(startPointRef.current.x, e.clientX);
+        const bottom = Math.max(startPointRef.current.y, e.clientY);
+
+        setSelectionBox({
+          startX: startPointRef.current.x,
+          startY: startPointRef.current.y,
+          currentX: e.clientX,
+          currentY: e.clientY,
+          active: true,
+        });
+
+        // Smooth auto-scroll when dragging near container borders
+        if (contentAreaRef.current) {
+          const containerRect = contentAreaRef.current.getBoundingClientRect();
+          if (e.clientY < containerRect.top + 40) {
+            contentAreaRef.current.scrollTop -= 14;
+          } else if (e.clientY > containerRect.bottom - 40) {
+            contentAreaRef.current.scrollTop += 14;
+          }
+        }
+
+        // Intersect with file elements
+        const fileElements = contentAreaRef.current?.querySelectorAll('[data-file-id]');
+        const nextSelected = new Set<string>(initialSelectedRef.current);
+
+        fileElements?.forEach(el => {
+          const fileId = el.getAttribute('data-file-id');
+          if (!fileId) return;
+          const rect = el.getBoundingClientRect();
+
+          const intersects = !(
+            rect.right < left ||
+            rect.left > right ||
+            rect.bottom < top ||
+            rect.top > bottom
+          );
+
+          if (intersects) {
+            nextSelected.add(fileId);
+          }
+        });
+
+        setSelectedFileIds(nextSelected);
+        if (nextSelected.size > 0) {
+          setIsMultiSelectMode(true);
+        }
+      }
+    };
+
+    const handleMouseUp = (e: MouseEvent) => {
+      if (!isMouseDownRef.current) return;
+      isMouseDownRef.current = false;
+
+      if (hasMovedEnoughRef.current) {
+        setSelectionBox(null);
+        hasMovedEnoughRef.current = false;
+      } else {
+        // Plain click on empty space without dragging -> deselect
+        if (!e.shiftKey && !e.ctrlKey && !e.metaKey) {
+          const target = e.target as HTMLElement;
+          if (
+            contentAreaRef.current?.contains(target) &&
+            !target.closest('button, input, textarea, a, [role="button"], [data-file-item], [data-folder-item], tr')
+          ) {
+            setSelectedFileIds(new Set());
+            setIsMultiSelectMode(false);
+          }
+        }
+      }
+      startPointRef.current = null;
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, []);
+
+  const handleMouseDownOnContent = (e: React.MouseEvent<HTMLDivElement>) => {
+    // Only primary left click (button 0)
+    if (e.button !== 0) return;
+    const target = e.target as HTMLElement;
+
+    // Do not initiate selection if clicking interactive UI
+    if (target.closest('button, input, textarea, select, a, [role="button"], label, .no-marquee')) {
+      return;
+    }
+
+    const fileEl = target.closest('[data-file-item]');
+    const folderEl = target.closest('[data-folder-item]');
+
+    // If clicked on whitespace, padding, or gaps, OR holding Shift/Ctrl:
+    if ((!fileEl && !folderEl) || e.shiftKey || e.ctrlKey || e.metaKey) {
+      isMouseDownRef.current = true;
+      startPointRef.current = { x: e.clientX, y: e.clientY };
+      hasMovedEnoughRef.current = false;
+      initialSelectedRef.current = (e.shiftKey || e.ctrlKey || e.metaKey)
+        ? new Set(selectedFileIds)
+        : new Set();
+    }
   };
 
   // Helper for small icons (table / list)
@@ -751,10 +1071,23 @@ export const FileManager: React.FC<FileManagerProps> = ({
                   e.stopPropagation();
                   setDragOverBack(false);
                   const fileId = e.dataTransfer.getData('application/x-teledrive-file-id') || e.dataTransfer.getData('text/plain') || draggedFileId;
+                  setDraggedFileId(null);
                   if (fileId) {
-                    const fileToMove = files.find(f => f.id === fileId);
-                    if (fileToMove) {
-                      onMoveFileToFolder(fileToMove, currentFolder?.parentId || null);
+                    const targetFolderId = currentFolder?.parentId || null;
+                    if (selectedFileIds.has(fileId) && selectedFileIds.size > 1) {
+                      selectedFileIds.forEach(id => {
+                        const f = files.find(item => item.id === id);
+                        if (f && f.folderId !== targetFolderId) {
+                          onMoveFileToFolder(f, targetFolderId);
+                        }
+                      });
+                      setSelectedFileIds(new Set());
+                      setIsMultiSelectMode(false);
+                    } else {
+                      const fileToMove = files.find(f => f.id === fileId);
+                      if (fileToMove && fileToMove.folderId !== targetFolderId) {
+                        onMoveFileToFolder(fileToMove, targetFolderId);
+                      }
                     }
                   }
                 }}
@@ -1087,42 +1420,44 @@ export const FileManager: React.FC<FileManagerProps> = ({
               onClick={handleSelectAll}
               className="flex items-center gap-1.5 font-medium text-sky-700 dark:text-sky-300 hover:underline"
             >
-              {selectedFileIds.size === sortedFiles.length ? (
+              {(selectedFileIds.size === sortedFiles.length && selectedFolderIds.size === displayedFolders.length) ? (
                 <CheckSquare className="w-4 h-4 text-sky-600" />
               ) : (
                 <Square className="w-4 h-4 text-slate-400" />
               )}
               <span>
-                {selectedFileIds.size === sortedFiles.length
+                {(selectedFileIds.size === sortedFiles.length && selectedFolderIds.size === displayedFolders.length)
                   ? 'Bỏ chọn tất cả'
-                  : `Chọn tất cả (${sortedFiles.length})`}
+                  : `Chọn tất cả (${sortedFiles.length + displayedFolders.length})`}
               </span>
             </button>
             <span className="text-slate-400">|</span>
             <span className="font-semibold text-slate-800 dark:text-slate-200">
-              Đã chọn: <span className="text-sky-600 dark:text-sky-400">{selectedFileIds.size}</span> tệp
+              Đã chọn: <span className="text-sky-600 dark:text-sky-400">{selectedFileIds.size}</span> tệp, <span className="text-sky-600 dark:text-sky-400">{selectedFolderIds.size}</span> thư mục
             </span>
           </div>
 
           <div className="flex items-center gap-2">
-            {selectedFileIds.size > 0 && (
+            {(selectedFileIds.size > 0 || selectedFolderIds.size > 0) && (
               <>
                 <button
                   onClick={handleBatchDownload}
                   className="px-3 py-1 rounded-lg bg-sky-600 text-white font-medium hover:bg-sky-500 flex items-center gap-1.5 shadow-xs"
                 >
                   <Download className="w-3.5 h-3.5" />
-                  <span>Tải xuống ({selectedFileIds.size})</span>
+                  <span>Tải xuống ({selectedFileIds.size + selectedFolderIds.size})</span>
                 </button>
 
-                <button
-                  onClick={handleBatchDelete}
-                  className="px-3 py-1 rounded-lg bg-rose-600 text-white font-medium hover:bg-rose-500 flex items-center gap-1.5 shadow-xs transition-colors"
-                  title="Xóa các tệp đã chọn"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                  <span>Xóa ({selectedFileIds.size})</span>
-                </button>
+                {selectedFileIds.size > 0 && (
+                  <button
+                    onClick={handleBatchDelete}
+                    className="px-3 py-1 rounded-lg bg-rose-600 text-white font-medium hover:bg-rose-500 flex items-center gap-1.5 shadow-xs transition-colors"
+                    title="Xóa các tệp đã chọn"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Xóa ({selectedFileIds.size})</span>
+                  </button>
+                )}
               </>
             )}
 
@@ -1130,6 +1465,7 @@ export const FileManager: React.FC<FileManagerProps> = ({
               onClick={() => {
                 setIsMultiSelectMode(false);
                 setSelectedFileIds(new Set());
+                setSelectedFolderIds(new Set());
               }}
               className="p-1 rounded-lg text-slate-500 hover:bg-slate-200 dark:hover:bg-slate-800"
               title="Đóng chọn nhiều"
@@ -1141,7 +1477,24 @@ export const FileManager: React.FC<FileManagerProps> = ({
       )}
 
       {/* Main Content Area */}
-      <div className="flex-1 overflow-y-auto bg-white dark:bg-[#0b1120]">
+      <div
+        ref={contentAreaRef}
+        className="flex-1 overflow-y-auto bg-white dark:bg-[#0b1120] min-h-0 flex flex-col relative select-none"
+        onContextMenu={e => handleContextMenu(e)}
+        onMouseDown={handleMouseDownOnContent}
+      >
+        {/* Rubber-band / Marquee selection box overlay */}
+        {selectionBox && selectionBox.active && (
+          <div
+            className="fixed pointer-events-none z-50 border border-sky-500 bg-sky-500/20 rounded-sm shadow-sm"
+            style={{
+              left: Math.min(selectionBox.startX, selectionBox.currentX),
+              top: Math.min(selectionBox.startY, selectionBox.currentY),
+              width: Math.abs(selectionBox.currentX - selectionBox.startX),
+              height: Math.abs(selectionBox.currentY - selectionBox.startY),
+            }}
+          />
+        )}
         {currentView === 'links' ? (
           <div className="p-4 sm:p-6 space-y-4 max-w-5xl mx-auto">
             <div className="bg-sky-50 dark:bg-sky-950/40 border border-sky-100 dark:border-sky-900/60 p-4 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -1346,7 +1699,8 @@ export const FileManager: React.FC<FileManagerProps> = ({
           </div>
         ) : viewMode === 'details' ? (
           /* Table View: Details */
-          <table className="w-full text-left text-xs border-collapse">
+          <div className="flex-1 min-h-full flex flex-col">
+            <table className="w-full text-left text-xs border-collapse">
             <thead className="text-[12px] font-medium text-slate-500 dark:text-slate-400 border-b border-slate-200 dark:border-slate-800/80 sticky top-0 bg-white dark:bg-[#0b1120] z-10">
               <tr>
                 {isMultiSelectMode && <th className="w-10 py-3 px-4"></th>}
@@ -1382,7 +1736,14 @@ export const FileManager: React.FC<FileManagerProps> = ({
               {displayedFolders.map(folder => (
                 <tr
                   key={folder.id}
-                  onClick={() => onNavigateFolder(folder.id)}
+                  data-folder-item="true"
+                  onClick={() => {
+                    if (isMultiSelectMode) {
+                      toggleSelectFolder(folder.id);
+                    } else {
+                      onNavigateFolder(folder.id);
+                    }
+                  }}
                   onContextMenu={e => handleContextMenu(e, undefined, folder)}
                   onDragOver={e => {
                     e.preventDefault();
@@ -1402,19 +1763,42 @@ export const FileManager: React.FC<FileManagerProps> = ({
                     setDragOverFolderId(null);
                     setDraggedFileId(null);
                     if (fileId) {
-                      const fileToMove = files.find(f => f.id === fileId);
-                      if (fileToMove) {
-                        onMoveFileToFolder(fileToMove, folder.id);
+                      if (selectedFileIds.has(fileId) && selectedFileIds.size > 1) {
+                        selectedFileIds.forEach(id => {
+                          const f = files.find(item => item.id === id);
+                          if (f && f.folderId !== folder.id) {
+                            onMoveFileToFolder(f, folder.id);
+                          }
+                        });
+                        setSelectedFileIds(new Set());
+                        setIsMultiSelectMode(false);
+                      } else {
+                        const fileToMove = files.find(f => f.id === fileId);
+                        if (fileToMove && fileToMove.folderId !== folder.id) {
+                          onMoveFileToFolder(fileToMove, folder.id);
+                        }
                       }
                     }
                   }}
                   className={`transition-all cursor-pointer group ${
+                    selectedFolderIds.has(folder.id) ? 'bg-sky-50 dark:bg-sky-950/30' : ''
+                  } ${
                     dragOverFolderId === folder.id
                       ? 'bg-sky-100 dark:bg-sky-950/80 ring-2 ring-sky-500 font-semibold'
                       : 'hover:bg-slate-50/90 dark:hover:bg-slate-800/50'
                   }`}
                 >
-                  {isMultiSelectMode && <td className="py-2.5 px-4"></td>}
+                  {isMultiSelectMode && (
+                    <td className="py-2.5 px-4" onClick={e => e.stopPropagation()}>
+                      <button onClick={e => toggleSelectFolder(folder.id, e)}>
+                        {selectedFolderIds.has(folder.id) ? (
+                          <CheckSquare className="w-4 h-4 text-sky-600" />
+                        ) : (
+                          <Square className="w-4 h-4 text-slate-400" />
+                        )}
+                      </button>
+                    </td>
+                  )}
                   <td className="py-2.5 px-4 flex items-center gap-3">
                     <Folder className={`w-5 h-5 shrink-0 ${
                       dragOverFolderId === folder.id
@@ -1453,7 +1837,9 @@ export const FileManager: React.FC<FileManagerProps> = ({
               {sortedFiles.map(file => (
                 <tr
                   key={file.id}
-                  draggable={!isMultiSelectMode}
+                  data-file-item="true"
+                  data-file-id={file.id}
+                  draggable={!isMultiSelectMode || selectedFileIds.has(file.id)}
                   onDragStart={e => {
                     e.dataTransfer.setData('application/x-teledrive-file-id', file.id);
                     e.dataTransfer.setData('text/plain', file.id);
@@ -1473,6 +1859,7 @@ export const FileManager: React.FC<FileManagerProps> = ({
                   }}
                   onDoubleClick={() => onOpenFilePreview(file)}
                   onContextMenu={e => handleContextMenu(e, file)}
+                  title="Kéo thả vào thư mục để di chuyển"
                   className={`hover:bg-slate-50/90 dark:hover:bg-slate-800/50 transition-colors cursor-pointer group ${
                     selectedFileIds.has(file.id) ? 'bg-sky-50 dark:bg-sky-950/30' : ''
                   } ${draggedFileId === file.id ? 'opacity-40' : ''}`}
@@ -1519,14 +1906,23 @@ export const FileManager: React.FC<FileManagerProps> = ({
               ))}
             </tbody>
           </table>
+          <div className="flex-1 min-h-24" />
+        </div>
         ) : viewMode === 'list' ? (
           /* List View */
-          <div className="p-3 sm:p-4 space-y-1">
+          <div className="p-3 sm:p-4 space-y-1 flex-1 min-h-full flex flex-col">
             {/* Folders */}
             {displayedFolders.map(folder => (
               <div
                 key={folder.id}
-                onClick={() => onNavigateFolder(folder.id)}
+                data-folder-item="true"
+                onClick={() => {
+                  if (isMultiSelectMode) {
+                    toggleSelectFolder(folder.id);
+                  } else {
+                    onNavigateFolder(folder.id);
+                  }
+                }}
                 onContextMenu={e => handleContextMenu(e, undefined, folder)}
                 onDragOver={e => {
                   e.preventDefault();
@@ -1546,19 +1942,41 @@ export const FileManager: React.FC<FileManagerProps> = ({
                   setDragOverFolderId(null);
                   setDraggedFileId(null);
                   if (fileId) {
-                    const fileToMove = files.find(f => f.id === fileId);
-                    if (fileToMove) {
-                      onMoveFileToFolder(fileToMove, folder.id);
+                    if (selectedFileIds.has(fileId) && selectedFileIds.size > 1) {
+                      selectedFileIds.forEach(id => {
+                        const f = files.find(item => item.id === id);
+                        if (f && f.folderId !== folder.id) {
+                          onMoveFileToFolder(f, folder.id);
+                        }
+                      });
+                      setSelectedFileIds(new Set());
+                      setIsMultiSelectMode(false);
+                    } else {
+                      const fileToMove = files.find(f => f.id === fileId);
+                      if (fileToMove && fileToMove.folderId !== folder.id) {
+                        onMoveFileToFolder(fileToMove, folder.id);
+                      }
                     }
                   }
                 }}
                 className={`flex items-center justify-between p-2.5 rounded-xl transition-all cursor-pointer group ${
+                  selectedFolderIds.has(folder.id) ? 'bg-sky-50 dark:bg-sky-950/30' : ''
+                } ${
                   dragOverFolderId === folder.id
                     ? 'bg-sky-100 dark:bg-sky-950/80 ring-2 ring-sky-500 font-semibold'
                     : 'hover:bg-slate-50 dark:hover:bg-slate-800/60'
                 }`}
               >
                 <div className="flex items-center gap-3 truncate min-w-0">
+                  {isMultiSelectMode && (
+                    <button onClick={e => toggleSelectFolder(folder.id, e)} className="shrink-0" id={`chk-folder-list-${folder.id}`}>
+                      {selectedFolderIds.has(folder.id) ? (
+                        <CheckSquare className="w-4 h-4 text-sky-600" />
+                      ) : (
+                        <Square className="w-4 h-4 text-slate-400" />
+                      )}
+                    </button>
+                  )}
                   <Folder className={`w-5 h-5 shrink-0 ${
                     dragOverFolderId === folder.id
                       ? 'text-sky-600 fill-sky-200 animate-bounce'
@@ -1593,7 +2011,9 @@ export const FileManager: React.FC<FileManagerProps> = ({
             {sortedFiles.map(file => (
               <div
                 key={file.id}
-                draggable={!isMultiSelectMode}
+                data-file-item="true"
+                data-file-id={file.id}
+                draggable={!isMultiSelectMode || selectedFileIds.has(file.id)}
                 onDragStart={e => {
                   e.dataTransfer.setData('application/x-teledrive-file-id', file.id);
                   e.dataTransfer.setData('text/plain', file.id);
@@ -1613,6 +2033,7 @@ export const FileManager: React.FC<FileManagerProps> = ({
                 }}
                 onDoubleClick={() => onOpenFilePreview(file)}
                 onContextMenu={e => handleContextMenu(e, file)}
+                title="Kéo thả vào thư mục để di chuyển"
                 className={`flex items-center justify-between p-2 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800/60 cursor-pointer group transition-colors ${
                   selectedFileIds.has(file.id) ? 'bg-sky-50 dark:bg-sky-950/30' : ''
                 } ${draggedFileId === file.id ? 'opacity-40' : ''}`}
@@ -1654,7 +2075,7 @@ export const FileManager: React.FC<FileManagerProps> = ({
           </div>
         ) : (
           /* Grid Views: Large, Medium, Small Icons */
-          <div className="p-3 sm:p-6 space-y-5 sm:space-y-6">
+          <div className="p-3 sm:p-6 space-y-5 sm:space-y-6 flex-1 min-h-full flex flex-col">
             {/* Folders in Grid */}
             {displayedFolders.length > 0 && (
               <div>
@@ -1665,7 +2086,13 @@ export const FileManager: React.FC<FileManagerProps> = ({
                   {displayedFolders.map(folder => (
                     <div
                       key={folder.id}
-                      onClick={() => onNavigateFolder(folder.id)}
+                      onClick={() => {
+                        if (isMultiSelectMode) {
+                          toggleSelectFolder(folder.id);
+                        } else {
+                          onNavigateFolder(folder.id);
+                        }
+                      }}
                       onContextMenu={e => handleContextMenu(e, undefined, folder)}
                       onDragOver={e => {
                         e.preventDefault();
@@ -1685,19 +2112,41 @@ export const FileManager: React.FC<FileManagerProps> = ({
                         setDragOverFolderId(null);
                         setDraggedFileId(null);
                         if (fileId) {
-                          const fileToMove = files.find(f => f.id === fileId);
-                          if (fileToMove) {
-                            onMoveFileToFolder(fileToMove, folder.id);
+                          if (selectedFileIds.has(fileId) && selectedFileIds.size > 1) {
+                            selectedFileIds.forEach(id => {
+                              const f = files.find(item => item.id === id);
+                              if (f && f.folderId !== folder.id) {
+                                onMoveFileToFolder(f, folder.id);
+                              }
+                            });
+                            setSelectedFileIds(new Set());
+                            setIsMultiSelectMode(false);
+                          } else {
+                            const fileToMove = files.find(f => f.id === fileId);
+                            if (fileToMove && fileToMove.folderId !== folder.id) {
+                              onMoveFileToFolder(fileToMove, folder.id);
+                            }
                           }
                         }
                       }}
                       className={`p-3 rounded-xl border transition-all flex items-center justify-between gap-2 cursor-pointer group ${
-                        dragOverFolderId === folder.id
+                        selectedFolderIds.has(folder.id)
+                          ? 'border-sky-500 ring-2 ring-sky-500 bg-sky-50/50 dark:bg-sky-950/30'
+                          : dragOverFolderId === folder.id
                           ? 'border-sky-500 ring-2 ring-sky-500 bg-sky-100 dark:bg-sky-950/80 shadow-md scale-105'
                           : 'border-slate-200 dark:border-slate-800 bg-slate-50/60 hover:bg-slate-100 dark:bg-slate-800/40 dark:hover:bg-slate-800 hover:shadow-xs'
                       }`}
                     >
                       <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                        {isMultiSelectMode && (
+                          <button onClick={e => toggleSelectFolder(folder.id, e)} className="shrink-0" id={`chk-folder-grid-${folder.id}`}>
+                            {selectedFolderIds.has(folder.id) ? (
+                              <CheckSquare className="w-4 h-4 text-sky-600" />
+                            ) : (
+                              <Square className="w-4 h-4 text-slate-400" />
+                            )}
+                          </button>
+                        )}
                         <Folder className={`w-5 h-5 shrink-0 ${
                           dragOverFolderId === folder.id
                             ? 'text-sky-600 fill-sky-200 animate-bounce'
@@ -1742,7 +2191,7 @@ export const FileManager: React.FC<FileManagerProps> = ({
                 {sortedFiles.map(file => (
                   <div
                     key={file.id}
-                    draggable={!isMultiSelectMode}
+                    draggable={!isMultiSelectMode || selectedFileIds.has(file.id)}
                     onDragStart={e => {
                       e.dataTransfer.setData('application/x-teledrive-file-id', file.id);
                       e.dataTransfer.setData('text/plain', file.id);
@@ -1762,6 +2211,7 @@ export const FileManager: React.FC<FileManagerProps> = ({
                     }}
                     onDoubleClick={() => onOpenFilePreview(file)}
                     onContextMenu={e => handleContextMenu(e, file)}
+                    title="Kéo thả vào thư mục để di chuyển"
                     className={`group relative rounded-2xl border transition-all flex flex-col cursor-pointer overflow-hidden ${
                       selectedFileIds.has(file.id)
                         ? 'border-sky-500 ring-2 ring-sky-500/30 bg-sky-50/50 dark:bg-sky-950/30'
@@ -1853,15 +2303,25 @@ export const FileManager: React.FC<FileManagerProps> = ({
               <div className="flex items-center gap-2.5 min-w-0">
                 {contextMenu.folder ? (
                   <Folder className="w-5 h-5 text-sky-500 shrink-0" />
+                ) : contextMenu.file ? (
+                  renderSmallFileIcon(contextMenu.file)
                 ) : (
-                  contextMenu.file && renderSmallFileIcon(contextMenu.file)
+                  <Plus className="w-5 h-5 text-sky-500 shrink-0" />
                 )}
                 <div className="min-w-0 flex-1">
                   <div className="font-bold text-slate-800 dark:text-slate-100 truncate text-xs">
-                    {contextMenu.folder ? contextMenu.folder.name : contextMenu.file?.name}
+                    {contextMenu.folder
+                      ? contextMenu.folder.name
+                      : contextMenu.file
+                      ? contextMenu.file.name
+                      : (currentFolder ? currentFolder.name : 'Tùy chọn tải lên & tạo mới')}
                   </div>
                   <div className="text-[11px] text-slate-400">
-                    {contextMenu.folder ? 'Thư mục' : formatFileSize(contextMenu.file?.size || 0)}
+                    {contextMenu.folder
+                      ? 'Thư mục'
+                      : contextMenu.file
+                      ? formatFileSize(contextMenu.file?.size || 0)
+                      : 'Vùng trống'}
                   </div>
                 </div>
               </div>
@@ -2022,6 +2482,18 @@ export const FileManager: React.FC<FileManagerProps> = ({
                 </button>
                 <button
                   onClick={() => {
+                    if (onDownloadItemsAsZip) {
+                      onDownloadItemsAsZip([], [contextMenu.folder!.id]);
+                    }
+                    setContextMenu(null);
+                  }}
+                  className="w-full text-left px-3.5 py-2.5 sm:py-2 flex items-center gap-2.5 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                >
+                  <Download className="w-4 h-4 text-emerald-500" />
+                  <span>Tải xuống thư mục (ZIP)</span>
+                </button>
+                <button
+                  onClick={() => {
                     setRenamingFolder(contextMenu.folder);
                     setNewFolderName(contextMenu.folder!.name);
                     setContextMenu(null);
@@ -2058,6 +2530,65 @@ export const FileManager: React.FC<FileManagerProps> = ({
                   <Trash2 className="w-4 h-4 text-rose-500" />
                   <span>Xóa thư mục</span>
                 </button>
+              </>
+            )}
+
+            {/* Vùng trống (Empty Space Context Menu) */}
+            {!contextMenu.file && !contextMenu.folder && (
+              <>
+                {/* 1. Tải lên tệp tin mới */}
+                <button
+                  onClick={() => {
+                    setContextMenu(null);
+                    onOpenFileUpload();
+                  }}
+                  className="w-full text-left px-3.5 py-2.5 sm:py-2 flex items-center gap-2.5 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+                >
+                  <UploadCloud className="w-4 h-4 text-emerald-500" />
+                  <span className="font-medium">Tải lên tệp tin mới</span>
+                </button>
+
+                {/* 2. Tải lên thư mục */}
+                {onOpenFolderUpload && (
+                  <button
+                    onClick={() => {
+                      setContextMenu(null);
+                      onOpenFolderUpload();
+                    }}
+                    className="w-full text-left px-3.5 py-2.5 sm:py-2 flex items-center gap-2.5 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+                  >
+                    <FolderUp className="w-4 h-4 text-amber-500" />
+                    <span className="font-medium">Tải lên thư mục</span>
+                  </button>
+                )}
+
+                {/* 3. Tạo folder mới */}
+                <button
+                  onClick={() => {
+                    setContextMenu(null);
+                    onOpenCreateFolder();
+                  }}
+                  className="w-full text-left px-3.5 py-2.5 sm:py-2 flex items-center gap-2.5 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+                >
+                  <FolderPlus className="w-4 h-4 text-sky-500" />
+                  <span className="font-medium">Tạo folder mới</span>
+                </button>
+
+                {onSync && (
+                  <>
+                    <div className="my-1 border-t border-slate-100 dark:border-slate-700/80" />
+                    <button
+                      onClick={() => {
+                        setContextMenu(null);
+                        onSync();
+                      }}
+                      className="w-full text-left px-3.5 py-2.5 sm:py-2 flex items-center gap-2.5 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+                    >
+                      <RefreshCw className="w-4 h-4 text-slate-500" />
+                      <span>Quét từ Telegram</span>
+                    </button>
+                  </>
+                )}
               </>
             )}
           </div>

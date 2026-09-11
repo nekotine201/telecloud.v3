@@ -26,6 +26,12 @@ export function getBackendApiUrl(): string {
     if (saved && saved.trim()) {
       return saved.trim().replace(/\/+$/, '');
     }
+    // If running full-stack, default to the current domain origin so the server-side API is used by default,
+    // unless we are explicitly on a known frontend-only static host like Vercel.
+    const hostname = window.location.hostname;
+    if (hostname && !hostname.includes('vercel.app')) {
+      return window.location.origin;
+    }
   }
   const envUrl = (import.meta as any).env?.VITE_API_BASE_URL;
   if (envUrl && typeof envUrl === 'string' && envUrl.trim()) {
@@ -366,10 +372,17 @@ export async function uploadFileToTelegram(
   passphrase?: string,
   onProgress?: (progress: number, speed: string, eta: string, stageMessage?: string) => void,
   abortSignal?: AbortSignal,
-  targetChatId?: string
+  targetChatId?: string,
+  filePath?: string,
+  fileBuffer?: Buffer
 ): Promise<DriveFile> {
+  const fileName = file.name || 'unnamed_file';
+  const fileExt = fileName.split('.').pop()?.toLowerCase() || '';
+  const isSvg = fileExt === 'svg' || file.type === 'image/svg+xml';
   const totalSize = file.size;
   let fileToUpload: Blob = file;
+  let resolvedBuffer = fileBuffer;
+  const resolvedFilePath = filePath || (file as any)?.path || (file as any)?.filePath;
 
   if (isEncrypted) {
     // Encrypt client-side first
@@ -377,6 +390,7 @@ export async function uploadFileToTelegram(
     const buffer = await file.arrayBuffer();
     const { encryptedBlob } = await encryptFileBuffer(buffer, passphrase);
     fileToUpload = encryptedBlob;
+    resolvedBuffer = undefined; // encrypted blob needs its own buffer
   }
 
   // If real Telegram sessionString is provided, try Direct Browser-to-Telegram MTProto Upload first
@@ -387,16 +401,21 @@ export async function uploadFileToTelegram(
       }
       const { uploadFileDirectlyToTelegram } = await import('./clientTelegram');
 
-      // We wrap the blob/file in a File object if it is an encrypted Blob
-      const fileObjectToUpload = (fileToUpload instanceof File) 
+      // Ensure appropriate MIME type for SVG and other files
+      const inferredMime = isSvg ? 'image/svg+xml' : (file.type || 'application/octet-stream');
+
+      // We wrap the blob/file in a File object if it is an encrypted Blob or needs correct mime
+      const fileObjectToUpload = (fileToUpload instanceof File && fileToUpload.type === inferredMime) 
         ? fileToUpload 
-        : new File([fileToUpload], file.name, { type: file.type || 'application/octet-stream' });
+        : new File([fileToUpload], file.name, { type: inferredMime });
 
       const result = await uploadFileDirectlyToTelegram({
         file: fileObjectToUpload,
         sessionString,
         chatId: targetType === 'saved' ? 'me' : (targetChatId || targetName),
         caption: `TeleCloud Cloud: ${file.name}`,
+        filePath: resolvedFilePath,
+        buffer: resolvedBuffer,
         onProgress: (pct, speed, eta) => {
           if (onProgress) {
             onProgress(pct, speed, eta, `Tốc độ tối đa trực tiếp: ${pct}%`);
@@ -418,8 +437,8 @@ export async function uploadFileToTelegram(
         id: `file-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
         name: file.name,
         size: actualSize,
-        category: determineCategory(file.name, file.type || 'application/octet-stream'),
-        mimeType: file.type || 'application/octet-stream',
+        category: determineCategory(file.name, inferredMime),
+        mimeType: inferredMime,
         folderId,
         createdAt: Date.now(),
         updatedAt: Date.now(),
@@ -437,7 +456,7 @@ export async function uploadFileToTelegram(
         throw new Error('Quá trình tải tệp đã bị dừng');
       }
       console.warn('[Upload] Direct browser MTProto upload failed, falling back to server-side chunked upload:', directErr);
-      if (!getBackendApiUrl()) {
+      if (!getBackendApiUrl() && typeof window !== 'undefined' && !window.location.origin) {
         throw new Error(`Tải tệp trực tiếp qua WebSocket thất bại: ${directErr.message || directErr}`);
       }
     }

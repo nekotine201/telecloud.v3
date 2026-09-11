@@ -1,6 +1,8 @@
 {
-  "name": "TeleCloud - Telegram Cloud Drive",
+  "name": "Remix TeleDrive - Telegram Cloud Drive",
   "description": "Biến Telegram thành Google Drive với bộ nhớ không giới hạn, hỗ trợ file 2GB, quản lý thư mục trực quan và bảo mật 100% client-side.",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
 }
