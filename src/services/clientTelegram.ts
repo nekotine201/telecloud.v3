@@ -257,7 +257,7 @@ export interface ClientPhoneSession {
   phoneNumber: string;
   resolveCode?: (code: string) => void;
   resolvePassword?: (password: string) => void;
-  status: 'pending' | 'awaiting_code' | 'awaiting_password' | 'success' | 'error';
+  status: 'pending' | 'awaiting_code' | 'verifying' | 'awaiting_password' | 'verifying_password' | 'success' | 'error';
   user?: any;
   sessionString?: string;
   error?: string;
@@ -352,26 +352,34 @@ export async function verifyClientPhoneCode(sessionId: string, code: string, pas
     throw new Error('Không tìm thấy phiên đăng nhập số điện thoại.');
   }
 
-  if (session.status === 'awaiting_code' && session.resolveCode) {
-    session.resolveCode(code);
+  if ((session.status as any) === 'awaiting_code' && session.resolveCode) {
+    const oldResolve = session.resolveCode;
+    session.status = 'verifying';
+    oldResolve(code);
 
-    // Wait for state transition
+    // Wait for state transition (success, awaiting_password, error, or awaiting_code again on retry)
     const startWait = Date.now();
-    while (session.status === 'awaiting_code') {
-      if (Date.now() - startWait > 35000) {
+    while ((session.status as any) === 'verifying') {
+      if (Date.now() - startWait > 25000) {
         break;
       }
       await new Promise(r => setTimeout(r, 100));
     }
   }
 
-  if (session.status === 'awaiting_password') {
+  if ((session.status as any) === 'awaiting_code') {
+    throw new Error('Mã xác nhận (OTP) không chính xác hoặc đã hết hạn. Vui lòng nhập lại.');
+  }
+
+  if ((session.status as any) === 'awaiting_password') {
     if (password && session.resolvePassword) {
-      session.resolvePassword(password);
+      const oldResolvePassword = session.resolvePassword;
+      session.status = 'verifying_password';
+      oldResolvePassword(password);
 
       const startWait = Date.now();
-      while (session.status === 'awaiting_password') {
-        if (Date.now() - startWait > 35000) {
+      while ((session.status as any) === 'verifying_password') {
+        if (Date.now() - startWait > 25000) {
           break;
         }
         await new Promise(r => setTimeout(r, 100));
@@ -385,7 +393,11 @@ export async function verifyClientPhoneCode(sessionId: string, code: string, pas
     }
   }
 
-  if (session.status === 'success' && session.user) {
+  if ((session.status as any) === 'awaiting_password') {
+    throw new Error('Mật khẩu xác thực 2 bước (2FA) không chính xác. Vui lòng nhập lại.');
+  }
+
+  if ((session.status as any) === 'success' && session.user) {
     return {
       success: true,
       user: session.user,
@@ -393,7 +405,7 @@ export async function verifyClientPhoneCode(sessionId: string, code: string, pas
     };
   }
 
-  if (session.status === 'error') {
+  if ((session.status as any) === 'error') {
     throw new Error(session.error || 'Xác nhận mã thất bại');
   }
 
