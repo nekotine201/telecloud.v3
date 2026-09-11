@@ -358,7 +358,7 @@ export async function verifyClientPhoneCode(sessionId: string, code: string, pas
     // Wait for state transition
     const startWait = Date.now();
     while (session.status === 'awaiting_code') {
-      if (Date.now() - startWait > 8000) {
+      if (Date.now() - startWait > 35000) {
         break;
       }
       await new Promise(r => setTimeout(r, 100));
@@ -371,7 +371,7 @@ export async function verifyClientPhoneCode(sessionId: string, code: string, pas
 
       const startWait = Date.now();
       while (session.status === 'awaiting_password') {
-        if (Date.now() - startWait > 8000) {
+        if (Date.now() - startWait > 35000) {
           break;
         }
         await new Promise(r => setTimeout(r, 100));
